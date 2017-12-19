@@ -1,0 +1,62 @@
+#
+# 
+
+nout = 500
+timestep = 1
+
+grid = "tokamak.fci.nc"
+
+[mesh]
+
+paralleltransform = fci
+
+[solver]  # Time integration solver
+
+#atol = 1e-6
+#rtol = 1e-3
+
+[phisolver]
+type=cyclic
+dst = true
+
+all_terms = false
+
+inner_boundary_flags = 0
+outer_boundary_flags = 0
+
+[psisolver]
+type=cyclic
+dst = true
+
+all_terms = false
+
+inner_boundary_flags = 0
+outer_boundary_flags = 0
+
+[laplace]
+
+all_terms = false
+
+[model]
+
+viscosity = 1e-2     # Kinematic viscosity in m^2/s
+viscosity_par = 1e2  # Parallel kinematic viscosity in m^2/s
+resistivity = 5e-6
+
+Ti = 100.
+Te = 100.
+
+electromagnetic = true
+FiniteElMass = true
+
+vacuum_damp = 10
+
+[all]
+bndry_par_all = parallel_neumann
+
+[n]
+
+scale = 1e-3
+zl = z / (2*pi)
+function = exp(-((x-0.5)/0.1)^2 - ((zl-0.5)/0.1)^2)
+
