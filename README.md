@@ -1,9 +1,26 @@
 Isothermal model for FCI simulations
 ====================================
 
+[![License](https://img.shields.io/badge/license-GPL-blue.svg)](https://img.shields.io/badge/license-GPL-blue.svg)
+
 Evolves plasma density, vorticity, parallel current and momentum.
 
-This code was written for [BOUT++ version 4.1](https://github.com/boutproject/BOUT-dev/releases).
+This code was written using [BOUT++ version 4.1](https://github.com/boutproject/BOUT-dev/releases).
+
+    Copyright 2017 Ben Dudson, University of York. Email: benjamin.dudson@york.ac.uk
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Lesser General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 Tokamaks
 --------
