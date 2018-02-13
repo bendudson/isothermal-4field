@@ -243,7 +243,7 @@ protected:
     
     phi -= Ti * n; // Ion diamagnetic drift
     
-    ntot = floor(n + N0, 1e-8);    // Total density
+    ntot = floor(n + N0, 0.0);    // Total density
     
     Field3D phitot = phi - Ti * N0; // Total electric potential, assuming omega0 = 0
     
@@ -356,9 +356,10 @@ protected:
       
       ddt(n) = 
         poisson(ntot, phitot) // ExB advection
-        - Div_parP2(ntot, vi) // Parallel advection
+        //- Div_parP2(ntot, vi) // Parallel advection
         //+ Div_parP(jtot)
-        + Div_parP2(ntot, jtot/ntot)
+        //+ Div_parP2(ntot, jtot/ntot)
+        - Div_par_U1(ntot, vi - jtot/(ntot + 1e-4))
         + curvature(ntot * Te)  // Electron curvature drift
         + viscosity*Delp2(n)
         ;
@@ -400,11 +401,13 @@ protected:
       
       ddt(nvi) =
         poisson(nvi, phitot) // ExB advection
-        - Div_parP2(nvi, vi) // Parallel advection
+        - Div_par_U1(nvi, vi) // Parallel advection
         - curvature(nvi * Ti)  // Ion curvature drift
         - Grad_parP(ptot)    // pressure gradient
         + viscosity*Delp2(nvi) // Perpendicular viscosity
         + viscosity_par * Diffusion_parP(vi) // Parallel viscosity
+
+        - vacuum_damp*vac_mask*nvi // Damping in vacuum region
         ;
     }
     
@@ -530,6 +533,63 @@ protected:
   // Written in skew-symmetric form to suppress zigzag modes
   Field3D Div_parP2(const Field3D f, const Field3D v) {
     return 0.5*(Div_parP(f*v) + v*Grad_parP(f) + f*Div_parP(v));
+  }
+
+  Field3D Div_par_U1(const Field3D f, const Field3D v) {
+    Field3D result;
+    result.allocate();
+
+    Field3D fyup, fydown;
+    
+    if (!f.hasYupYdown()) {
+      // Communicate to get yup and ydown fields
+      Field3D fcom = f;
+      mesh->communicate(fcom);
+      //fcom.applyParallelBoundary("parallel_neumann");
+      fcom.applyParallelBoundary("parallel_dirichlet_midpoint");
+      
+      fyup = fcom.yup();
+      fydown = fcom.ydown();
+    } else {
+      fyup = f.yup();
+      fydown = f.ydown();
+    }
+
+    Field3D vyup, vydown;
+    
+    if (!v.hasYupYdown()) {
+      // Communicate to get yup and ydown fields
+      Field3D vcom = v;
+      mesh->communicate(vcom);
+      vcom.applyParallelBoundary("parallel_dirichlet_midpoint");
+      
+      vyup = vcom.yup();
+      vydown = vcom.ydown();
+    } else {
+      vyup = v.yup();
+      vydown = v.ydown();
+    }
+    
+    Field3D Bup = Bxyz.yup();
+    Field3D Bdown = Bxyz.ydown();
+    
+    for(auto &i : result.region(RGN_NOBNDRY)) {
+      auto yp = i.yp();
+      auto ym = i.ym();
+      
+      // Lower boundary
+      BoutReal vm = 0.5*(vydown[ym] + v[i]); // Velocity at lower boundary
+      BoutReal fm = (vm > 0.0) ? fydown[ym] : f[i]; // Field at lower boundary
+      BoutReal Bm = 0.5*(Bdown[ym] + Bxyz[i]);  // Magnetic field
+      
+      // Upper boundary
+      BoutReal vp = 0.5*(vyup[yp] + v[i]);
+      BoutReal fp = (vp > 0.0) ? f[i] : fyup[yp];
+      BoutReal Bp = 0.5*(Bup[yp] + Bxyz[i]);  // Magnetic field
+      
+      result[i] = (vp * fp / Bp - vm * fm / Bm)*inv_dy[i] * Bxyz[i];
+    }
+    return result;
   }
   
 private:
