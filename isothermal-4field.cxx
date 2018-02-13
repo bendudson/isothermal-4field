@@ -1,14 +1,16 @@
 
 #include <bout/physicsmodel.hxx>
 #include <bout/constants.hxx>
-#include <invert_laplace.hxx>
+//#include <invert_laplace.hxx>
+#include <bout/invert/laplacexz.hxx>      // Laplacian inversion (BSTING only has XZ-PETSc)
 
 class MergingFlux : public PhysicsModel {
 protected:
   int init(bool restarting) {
-    
+
     // Read options
     Options *opt = Options::getRoot()->getSection("model");
+    // mesh->periodicZ=true;
     
     /////////////////////////////////////////////////////////////////////
     // Normalisations
@@ -88,10 +90,10 @@ protected:
     
     output.write("\tNormalised viscosity = %e, parallel viscosity = %e, resistivity = %e\n", viscosity, viscosity_par, resistivity);
 
-    OPTION(opt, vacuum_density, 1e-5);
-    OPTION(opt, vacuum_trans, 5e-6);
+    OPTION(opt, vacuum_density, 2e-2);
+    OPTION(opt, vacuum_trans, 5e-4);
     OPTION(opt, vacuum_mult, 1e6);
-    OPTION(opt, vacuum_damp, 10);
+    OPTION(opt, vacuum_damp, 1.0);
     
     /////////////////////////////////////////////////////////////////////
     // Coordinates and mesh
@@ -104,19 +106,20 @@ protected:
     mesh->communicate(Bxyz); // To get yup/ydown fields
     
     logB = log(Bxyz);
+    SAVE_ONCE(logB);
     
     // Metric factor appearing in front of the bracket operator
     // For Clebsch coordinates this is 1
-    bracket_factor = sqrt(coord->g_22) / (coord->J * Bxyz);
-    
+    bracket_factor = sqrt(coord->g_yy) / (coord->J * Bxyz);
+    mesh->communicate(bracket_factor);
     // Normalise by leaving metric as-is (SI units), but dividing dx,dy and dz by rho_s
     coord->dx /= rho_s;
     coord->dy /= rho_s;
     coord->dz /= rho_s;
     
-    R = sqrt(coord->g_22) / rho_s;
+    R = sqrt(coord->g_yy) / rho_s;
 
-    inv_dy = 1. / (sqrt(coord->g_22) * coord->dy);
+    inv_dy = 1. / (sqrt(coord->g_yy) * coord->dy);
     
     /////////////////////////////////////////////////////////////////////
     // Equilibrium profiles
@@ -143,6 +146,19 @@ protected:
     
     OPTION(opt, electromagnetic, true);
     OPTION(opt, FiniteElMass, false);
+
+    OPTION(opt, Diffusion, false);
+    OPTION(opt, curvilinear, false);
+
+    if(curvilinear){
+      mesh->periodicZ=true;
+    }
+      
+    
+    omega.mergeYupYdown();
+    n.mergeYupYdown();
+    nvi.mergeYupYdown();
+    Ajpar.mergeYupYdown();
     
     SOLVE_FOR3(omega, n, nvi);
 
@@ -154,32 +170,54 @@ protected:
     // Laplacian inversions
     
     // Create Laplacian inversion objects for potentials
-    phiSolver = Laplacian::create(Options::getRoot()->getSection("phisolver"));
+    phiSolver = LaplaceXZ::create(mesh, Options::getRoot()->getSection("phisolver"));
     phi = psi = Apar = Jpar = 0.0; // Initial value
+    phiSolver->setCoefs(Field3D(1.0),Field3D(0.0));
 
     if (electromagnetic && FiniteElMass) {
       // Need to solve a Helmholtz problem to get Apar
-      psiSolver = Laplacian::create(Options::getRoot()->getSection("psisolver"));
-      psiSolver->setCoefA(1.0); // density n
-      psiSolver->setCoefD(-1.0/(beta * mi_me));
-
+      psiSolver = LaplaceXZ::create(mesh, Options::getRoot()->getSection("psisolver"));
+      Field3D A = 1.0;
+      Field3D D = -1.0/(beta * mi_me);
+      psiSolver->setCoefs(A,D);
+  
       SAVE_REPEAT(Apar);
     }
+
+    // // Laplacian inversions
+    
+    // // Create Laplacian inversion objects for potentials
+    // phiSolver = Laplacian::create(Options::getRoot()->getSection("phisolver"));
+    // phi = psi = Apar = Jpar = 0.0; // Initial value
+
+    // if (electromagnetic && FiniteElMass) {
+    //   // Need to solve a Helmholtz problem to get Apar
+    //   psiSolver = Laplacian::create(Options::getRoot()->getSection("psisolver"));
+    //   psiSolver->setCoefA(1.0); // density n
+    //   psiSolver->setCoefD(-1.0/(beta * mi_me));
+
+    //   SAVE_REPEAT(Apar);
+    // }
     
     // Additional outputs
     SAVE_REPEAT3(phi, Jpar, psi);
-
+    
     SAVE_REPEAT2(ddt(nvi), ddt(n));
     
     n.splitYupYdown();
     SAVE_REPEAT2(n.yup(), n.ydown());
-
-    SAVE_REPEAT(vac_mask);
     
+    SAVE_REPEAT(vac_mask);
+
+    SAVE_REPEAT3(a,b,c);
+    SAVE_REPEAT2(d,f);
     return 0;
   }
   
   int rhs(BoutReal t) {
+    printf("TIME = %e\r", t);
+
+    Coordinates *coord = mesh->coordinates();
 
     ddt(omega) = 0.0;
     mesh->communicate(Apar, omega, n, nvi);
@@ -223,7 +261,8 @@ protected:
         // Electromagnetic + zero electron mass
         // Get J from Apar
         Apar = Ajpar;
-        Jpar = -(1./beta) * Delp2(Apar);
+	const Field3D &beta_inv = -(1./beta);
+        Jpar = coord->Div_Perp_Lap_FV(beta_inv, Apar, false); //-(1./beta) * Delp2(Apar);
       } else {
         // Electromagnetic + finite electron mass
         Apar = psiSolver->solve(ntot*Ajpar + nvi/mi_me, 0.0);
@@ -261,11 +300,14 @@ protected:
         - Div_parP2(omega, vi)   // Parallel advection
         + Div_parP(jtot)          // Parallel current
         + curvature(ptot)         // Diamagnetic current (ballooning drive)
-        + viscosity*(1.0 + vac_mask*vacuum_mult)*Delp2(omega)  // Viscosity
+        + (1.0 + vac_mask*vacuum_mult)*coord->Div_Perp_Lap_FV(viscosity,omega, false)  //viscosity*(1.0 + vac_mask*vacuum_mult)*Delp2(omega)  // Viscosity
         - vacuum_damp*vac_mask*omega // Damping in vacuum region
         ;
       
       ddt(omega) *= 1.0 - vac_mask;
+
+      c = - curvature(ptot); // Debugging variable
+
     }
     
     // Perturbed vector potential
@@ -287,8 +329,10 @@ protected:
         - Div_parP2(ntot, vi) // Parallel advection
         + Div_parP(jtot)
         + curvature(ntot * Te)  // Electron curvature drift
-        + viscosity*Delp2(n)
+        + coord->Div_Perp_Lap_FV(viscosity,n, false)//viscosity*Delp2(n)
         ;
+      f =   curvature(ntot * Te);
+
     }
     
     // Parallel momentum
@@ -300,11 +344,19 @@ protected:
         - Div_parP2(nvi, vi) // Parallel advection
         - curvature(nvi * Ti)  // Ion curvature drift
         - Grad_parP(ptot)    // pressure gradient
-        + viscosity*Delp2(nvi) // Perpendicular viscosity
+        + coord->Div_Perp_Lap_FV(viscosity,nvi, false) //viscosity*Delp2(nvi) // Perpendicular viscosity
         + viscosity_par * Diffusion_parP(vi) // Parallel viscosity
         ;
     }
-    
+
+    // Parallel Diffusion (for blob initial conditions)
+    if (Diffusion){
+      ddt(n) =
+	1e4*Diffusion_parP(n);
+      ddt(nvi) = 0.0;
+      ddt(Ajpar) = 0.0;
+      ddt(omega) = 0.0;
+    }
     return 0;
   }
 
@@ -436,15 +488,17 @@ private:
   Field3D psi;    // Poloidal flux
 
   Field3D Bxyz; // 3D Magnetic field [T]
-  Field2D R;    // Major radius  [Normalised]
+  Field3D R;    // Major radius  [Normalised]
   Field3D J0;   // Equilibrium parallel current [Normalised]
   Field3D N0;   // Equilibrium density [Normalised]
   
   Field3D bracket_factor; // sqrt(g_yy) / (JB) factor appearing in ExB advection
   Field3D logB; // Log(Bxyz) used in curvature
 
-  Laplacian *phiSolver; // Solver for potential phi from vorticity
-  Laplacian *psiSolver; // Solver for potential Apar(psi) from Ajpar
+  Field3D dRdx, dRdz;
+  
+  LaplaceXZ *phiSolver; // Solver for potential phi from vorticity
+  LaplaceXZ *psiSolver; // Solver for potential Apar(psi) from Ajpar
   
   BoutReal resistivity; // [Normalised]
   BoutReal viscosity;   // Perpendicular viscosity [Normalised]
@@ -462,7 +516,7 @@ private:
   
   BoutReal Te, Ti;  // Electron and ion temperatures [Normalised]
   
-  Field2D inv_dy; // 1 / (sqrt(g_22) * dy) for parallel gradients
+  Field3D inv_dy; // 1 / (sqrt(g_22) * dy) for parallel gradients
 
   Field3D vac_mask; // 1 in vacuum, 0 in plasma
   BoutReal vacuum_density, vacuum_trans; // Determines the transition from 0 to 1
@@ -471,6 +525,11 @@ private:
 
   bool electromagnetic; // Include electromagnetic effects?
   bool FiniteElMass;    // Finite electron mass?
+
+  bool Diffusion;   //Simulate only parallel diffusion?
+  bool curvilinear;   //Switch for curvilinear poloidal grids
+
+  Field3D a,b,c,d,e,f;  //Debugging Variables
 };
 
 BOUTMAIN(MergingFlux);
