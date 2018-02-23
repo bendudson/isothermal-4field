@@ -49,10 +49,15 @@ Te = 100.
 electromagnetic = true
 FiniteElMass = true
 
+vacuum_density = 1e-04
+vacuum_trans = 5e-06
+
 vacuum_damp = 10
+vacuum_diffuse = -1
 
 [all]
 bndry_par_all = parallel_neumann
+bndry_all = neumann
 
 [n]
 
@@ -60,3 +65,18 @@ scale = 1e-3
 zl = z / (2*pi)
 function = exp(-((x-0.5)/0.1)^2 - ((zl-0.5)/0.1)^2)
 
+bndry_par_all = parallel_neumann
+
+[nvi]
+bndry_par_yup = parallel_dirichlet(1.0)
+bndry_par_ydown = parallel_dirichlet(-1.0)
+
+[vi]
+bndry_par_yup = parallel_dirichlet(1.0)
+bndry_par_ydown = parallel_dirichlet(-1.0)
+
+[ntot]
+bndry_par_all = parallel_neumann
+
+[jtot]
+bndry_par_all = parallel_dirichlet_midpoint

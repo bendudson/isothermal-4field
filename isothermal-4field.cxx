@@ -1,16 +1,47 @@
-
-#include <bout/physicsmodel.hxx>
-#include <bout/constants.hxx>
-//#include <invert_laplace.hxx>
+#include "bout/physicsmodel.hxx"
+#include "bout/constants.hxx"
+//#include "invert_laplace.hxx"
 #include <bout/invert/laplacexz.hxx>      // Laplacian inversion (BSTING only has XZ-PETSc)
+
+#include "parallel_boundary_op.hxx"
+#include "boundary_factory.hxx"
+#include "field_factory.hxx"
+
+class ParDirichletMidpoint : public BoundaryOpPar {
+public:
+  ParDirichletMidpoint() :
+    BoundaryOpPar(NULL, 0.) {}
+  ParDirichletMidpoint(BoundaryRegionPar *region) :
+    BoundaryOpPar(region, 0.) {}
+  ParDirichletMidpoint(BoundaryRegionPar *region, FieldGenerator*  value) :
+    BoundaryOpPar(region, value) {}
+  ParDirichletMidpoint(BoundaryRegionPar *region, Field3D* value) :
+    BoundaryOpPar(region, value) {}
+  ParDirichletMidpoint(BoundaryRegionPar *region, BoutReal value) :
+    BoundaryOpPar(region, value) {}
+  
+  BoundaryOpPar* clone(BoundaryRegionPar *region, const list<string> &args);
+  BoundaryOpPar* clone(BoundaryRegionPar *region, Field3D *f);
+
+  using BoundaryOpPar::apply;
+  void apply(Field3D &f) override {return apply(f, 0);}
+  void apply(Field3D &f, BoutReal t) override;
+
+};
+
 
 class MergingFlux : public PhysicsModel {
 protected:
   int init(bool restarting) {
 
+    // SAVE_REPEAT4(a,b,c,d);
+    
+    // Add custom boundary condition
+    BoundaryFactory::getInstance()->add(new ParDirichletMidpoint(), "parallel_dirichlet_midpoint");
+    
     // Read options
     Options *opt = Options::getRoot()->getSection("model");
-    // mesh->periodicZ=true;
+    mesh->periodicZ=true;
     
     /////////////////////////////////////////////////////////////////////
     // Normalisations
@@ -90,10 +121,14 @@ protected:
     
     output.write("\tNormalised viscosity = %e, parallel viscosity = %e, resistivity = %e\n", viscosity, viscosity_par, resistivity);
 
-    OPTION(opt, vacuum_density, 2e-2);
-    OPTION(opt, vacuum_trans, 5e-4);
+    OPTION(opt, vacuum_density, 2e-4);
+    OPTION(opt, vacuum_trans, 5e-6);
     OPTION(opt, vacuum_mult, 1e6);
-    OPTION(opt, vacuum_damp, 1.0);
+
+    OPTION(opt, vacuum_damp, 10);
+    OPTION(opt, vacuum_diffuse, 10);
+
+    OPTION(opt, hyperresist, 1.0);
     
     /////////////////////////////////////////////////////////////////////
     // Coordinates and mesh
@@ -103,7 +138,14 @@ protected:
     mesh->get(Bxyz, "B");
     SAVE_ONCE(Bxyz);
 
+    Bxyz.applyBoundary("neumann");
+    ASSERT1( min(Bxyz) > 0.0 );
+    
     mesh->communicate(Bxyz); // To get yup/ydown fields
+
+    // Note: A Neumann condition simplifies boundary conditions on fluxes
+    // where the condition e.g. on J should be on flux (J/B)
+    Bxyz.applyParallelBoundary("parallel_neumann");
     
     logB = log(Bxyz);
     SAVE_ONCE(logB);
@@ -201,14 +243,15 @@ protected:
     
     // Additional outputs
     SAVE_REPEAT3(phi, Jpar, psi);
-    
     SAVE_REPEAT2(ddt(nvi), ddt(n));
     
     n.splitYupYdown();
     SAVE_REPEAT2(n.yup(), n.ydown());
-    
     SAVE_REPEAT(vac_mask);
 
+    ntot.setBoundary("ntot");
+    jtot.setBoundary("jtot");
+    
     SAVE_REPEAT3(a,b,c);
     SAVE_REPEAT2(d,f);
     return 0;
@@ -240,13 +283,16 @@ protected:
     
     phi -= Ti * n; // Ion diamagnetic drift
     
-    Field3D ntot = floor(n + N0, 1e-8);    // Total density
-    Field3D jtot = Jpar + J0; // Total parallel current
+    ntot = floor(n + N0, 0.0);    // Total density
+    
     Field3D phitot = phi - Ti * N0; // Total electric potential, assuming omega0 = 0
     
     // Parallel flow
-    //Field3D vi = nvi / ntot;
-    Field3D vi = nvi;
+     //Field3D vi = nvi / ntot;
+     Field3D vi = nvi;
+    // vi.splitYupYdown();
+    // vi.yup() = nvi.yup();
+    // vi.ydown() = nvi.ydown();
     
     Field3D ptot = (Te + Ti) * ntot; // Total pressure
 
@@ -265,8 +311,13 @@ protected:
         Jpar = coord->Div_Perp_Lap_FV(beta_inv, Apar, false); //-(1./beta) * Delp2(Apar);
       } else {
         // Electromagnetic + finite electron mass
-        Apar = psiSolver->solve(ntot*Ajpar + nvi/mi_me, 0.0);
-        Jpar = ntot*mi_me*(Ajpar - Apar) + nvi;
+        Apar = psiSolver->solve(Ajpar + nvi/mi_me, 0.0);
+        Jpar = mi_me*ntot*(Ajpar - Apar) + nvi;
+        
+        // Field3D ntot_zero = floor(n + N0, 0.0);
+        // psiSolver->setCoefA(ntot_zero);
+        // Apar = psiSolver->solve(ntot_zero*Ajpar + nvi/mi_me, 0.0);
+        // Jpar = mi_me*ntot_zero*(Ajpar - Apar) + nvi;
       }
     } else {
       // Electrostatic
@@ -289,6 +340,21 @@ protected:
     
     // Poloidal flux
     psi = Apar * R;
+
+    jtot = Jpar + J0; // Total parallel current
+    
+    ntot.applyBoundary();
+    jtot.applyBoundary();
+
+    //jtot *= Bxyz; // Note:Applying boundary on flux (j/B)
+    mesh->communicate(ntot, jtot);
+    ntot.applyParallelBoundary();
+    
+    jtot.applyParallelBoundary(0.0);
+    // jtot /= Bxyz;
+    // jtot.yup() /= Bxyz.yup();
+    // jtot.ydown() /= Bxyz.ydown();
+
     
     ////////////////////////////////////
     
@@ -313,11 +379,19 @@ protected:
     // Perturbed vector potential
     if (electromagnetic || FiniteElMass) {
       TRACE("ddt(Ajpar)");
+
+      Field3D Jpar2 = coord->Div_Perp_Lap_FV(hyperresist,Jpar, false);
       
       ddt(Ajpar) = 
         Grad_parP(Te*ntot - phitot)
         - resistivity*(1.0 + vac_mask*vacuum_mult) * Jpar // Resistivity
+        + Jpar2  // Hyper-resistivity
         ;
+
+      // a = Grad_parP(Te*ntot);
+      // b = -Grad_parP(phitot);
+      // c = -resistivity*(1.0 + vac_mask*vacuum_mult) * Jpar;
+      // d = hyperresist * Jpar2;
     }
     
     // Perturbed density
@@ -326,13 +400,43 @@ protected:
       
       ddt(n) = 
         poisson(ntot, phitot) // ExB advection
-        - Div_parP2(ntot, vi) // Parallel advection
-        + Div_parP(jtot)
+        //- Div_parP2(ntot, vi) // Parallel advection
+        //+ Div_parP(jtot)
+        //+ Div_parP2(ntot, jtot/ntot)
+        - Div_par_U1(ntot, vi - jtot/(ntot + 1e-4))
         + curvature(ntot * Te)  // Electron curvature drift
         + coord->Div_Perp_Lap_FV(viscosity,n, false)//viscosity*Delp2(n)
         ;
-      f =   curvature(ntot * Te);
-
+      
+      if (vacuum_diffuse > 0.0) {
+        // Add perpendicular diffusion at small density
+        
+        for (auto &i : n.region(RGN_NOBNDRY)) {
+          BoutReal nc = ntot[i];
+          if ( nc < 1e-6 ) {
+            // x+1/2
+            auto ind = i.xp();
+            BoutReal diff = vacuum_diffuse*(nc - ntot[ind]);
+            ddt(n)[ind] += diff;
+            ddt(n)[i] -= diff;
+            
+            ind = i.xm();
+            diff = vacuum_diffuse*(nc - ntot[ind]);
+            ddt(n)[ind] += diff;
+            ddt(n)[i] -= diff;
+            
+            ind = i.zp();
+            diff = vacuum_diffuse*(nc - ntot[ind]);
+            ddt(n)[ind] += diff;
+            ddt(n)[i] -= diff;
+            
+            ind = i.zm();
+            diff = vacuum_diffuse*(nc - ntot[ind]);
+            ddt(n)[ind] += diff;
+            ddt(n)[i] -= diff;
+          }
+        }
+      }
     }
     
     // Parallel momentum
@@ -342,11 +446,17 @@ protected:
       ddt(nvi) =
         poisson(nvi, phitot) // ExB advection
         - Div_parP2(nvi, vi) // Parallel advection
-        - curvature(nvi * Ti)  // Ion curvature drift
+        // - curvature(nvi * Ti)  // Ion curvature drift
         - Grad_parP(ptot)    // pressure gradient
-        + coord->Div_Perp_Lap_FV(viscosity,nvi, false) //viscosity*Delp2(nvi) // Perpendicular viscosity
-        + viscosity_par * Diffusion_parP(vi) // Parallel viscosity
+        // + coord->Div_Perp_Lap_FV(viscosity,nvi, false) //viscosity*Delp2(nvi) // Perpendicular viscosity
+        // + viscosity_par * Diffusion_parP(vi) // Parallel viscosity
+
+        // - vacuum_damp*vac_mask*nvi // Damping in vacuum region
         ;
+      // a = poisson(nvi, phitot);
+      // b = Div_parP2(nvi, vi);
+      // c = curvature(nvi * Ti);
+      // d = Grad_parP(ptot);
     }
 
     // Parallel Diffusion (for blob initial conditions)
@@ -380,7 +490,8 @@ protected:
       // Communicate to get yup and ydown fields
       Field3D fcom = f;
       mesh->communicate(fcom);
-      fcom.applyParallelBoundary("parallel_neumann");
+      //fcom.applyParallelBoundary("parallel_neumann");
+      fcom.applyParallelBoundary("parallel_dirichlet_midpoint");
       
       yup = fcom.yup();
       ydown = fcom.ydown();
@@ -409,6 +520,7 @@ protected:
       Field3D fcom = f;
       mesh->communicate(fcom);
       fcom.applyParallelBoundary("parallel_neumann");
+      //fcom.applyParallelBoundary("parallel_dirichlet_midpoint");
       
       yup = fcom.yup();
       ydown = fcom.ydown();
@@ -449,7 +561,8 @@ protected:
       // Communicate to get yup and ydown fields
       Field3D fcom = f;
       mesh->communicate(fcom);
-      fcom.applyParallelBoundary("parallel_neumann");
+      //fcom.applyParallelBoundary("parallel_neumann");
+      fcom.applyParallelBoundary("parallel_dirichlet_midpoint");
       
       yup = fcom.yup();
       ydown = fcom.ydown();
@@ -477,6 +590,63 @@ protected:
   Field3D Div_parP2(const Field3D f, const Field3D v) {
     return 0.5*(Div_parP(f*v) + v*Grad_parP(f) + f*Div_parP(v));
   }
+
+  Field3D Div_par_U1(const Field3D f, const Field3D v) {
+    Field3D result;
+    result.allocate();
+
+    Field3D fyup, fydown;
+    
+    if (!f.hasYupYdown()) {
+      // Communicate to get yup and ydown fields
+      Field3D fcom = f;
+      mesh->communicate(fcom);
+      //fcom.applyParallelBoundary("parallel_neumann");
+      fcom.applyParallelBoundary("parallel_dirichlet_midpoint");
+      
+      fyup = fcom.yup();
+      fydown = fcom.ydown();
+    } else {
+      fyup = f.yup();
+      fydown = f.ydown();
+    }
+
+    Field3D vyup, vydown;
+    
+    if (!v.hasYupYdown()) {
+      // Communicate to get yup and ydown fields
+      Field3D vcom = v;
+      mesh->communicate(vcom);
+      vcom.applyParallelBoundary("parallel_dirichlet_midpoint");
+      
+      vyup = vcom.yup();
+      vydown = vcom.ydown();
+    } else {
+      vyup = v.yup();
+      vydown = v.ydown();
+    }
+    
+    Field3D Bup = Bxyz.yup();
+    Field3D Bdown = Bxyz.ydown();
+    
+    for(auto &i : result.region(RGN_NOBNDRY)) {
+      auto yp = i.yp();
+      auto ym = i.ym();
+      
+      // Lower boundary
+      BoutReal vm = 0.5*(vydown[ym] + v[i]); // Velocity at lower boundary
+      BoutReal fm = (vm > 0.0) ? fydown[ym] : f[i]; // Field at lower boundary
+      BoutReal Bm = 0.5*(Bdown[ym] + Bxyz[i]);  // Magnetic field
+      
+      // Upper boundary
+      BoutReal vp = 0.5*(vyup[yp] + v[i]);
+      BoutReal fp = (vp > 0.0) ? f[i] : fyup[yp];
+      BoutReal Bp = 0.5*(Bup[yp] + Bxyz[i]);  // Magnetic field
+      
+      result[i] = (vp * fp / Bp - vm * fm / Bm)*inv_dy[i] * Bxyz[i];
+    }
+    return result;
+  }
   
 private:
   // Evolving variables
@@ -487,6 +657,9 @@ private:
   Field3D phi;    // Electrostatic potential
   Field3D psi;    // Poloidal flux
 
+  Field3D jtot; // Total current
+  Field3D ntot; // Total density
+  
   Field3D Bxyz; // 3D Magnetic field [T]
   Field3D R;    // Major radius  [Normalised]
   Field3D J0;   // Equilibrium parallel current [Normalised]
@@ -501,6 +674,7 @@ private:
   LaplaceXZ *psiSolver; // Solver for potential Apar(psi) from Ajpar
   
   BoutReal resistivity; // [Normalised]
+  BoutReal hyperresist; // Hyper-resistivity
   BoutReal viscosity;   // Perpendicular viscosity [Normalised]
   BoutReal viscosity_par; // Parallel viscosity [Normalised]
   
@@ -522,7 +696,8 @@ private:
   BoutReal vacuum_density, vacuum_trans; // Determines the transition from 0 to 1
   BoutReal vacuum_mult; // Multiply dissipation in vacuum
   BoutReal vacuum_damp; // Damping in vacuum region
-
+  BoutReal vacuum_diffuse; // Density diffusion at low density
+  
   bool electromagnetic; // Include electromagnetic effects?
   bool FiniteElMass;    // Finite electron mass?
 
@@ -531,5 +706,47 @@ private:
 
   Field3D a,b,c,d,e,f;  //Debugging Variables
 };
+
+///////////////////////////////////////////////////////////
+// Parallel boundary condition
+// using a midpoint approximation for Dirichlet condition
+
+BoundaryOpPar* ParDirichletMidpoint::clone(BoundaryRegionPar *region, const list<string> &args) {
+  if(!args.empty()) {
+    try {
+      real_value = stringToReal(args.front());
+      return new ParDirichletMidpoint(region, real_value);
+    } catch (BoutException& e) {
+      FieldGenerator* newgen = 0;
+      // First argument should be an expression
+      newgen = FieldFactory::get()->parse(args.front());
+      return new ParDirichletMidpoint(region, newgen);
+    }
+  }
+  return new ParDirichletMidpoint(region);
+}
+
+BoundaryOpPar* ParDirichletMidpoint::clone(BoundaryRegionPar *region, Field3D *f) {
+  return new ParDirichletMidpoint(region, f);
+}
+
+void ParDirichletMidpoint::apply(Field3D &f, BoutReal t) {
+
+  Field3D& f_next = f.ynext(bndry->dir);
+
+  Coordinates& coord = *(mesh->coordinates());
+
+  // Loop over grid points If point is in boundary, then fill in
+  // f_next such that the field would be VALUE on the boundary
+  for (bndry->first(); !bndry->isDone(); bndry->next()) {
+    // temp variables for convenience
+    int x = bndry->x; int y = bndry->y; int z = bndry->z;
+
+    // Generate the boundary value
+    BoutReal value = getValue(*bndry, t);
+    
+    f_next(x, y+bndry->dir, z) = 2.*value - f(x,y,z);
+  }
+}
 
 BOUTMAIN(MergingFlux);
