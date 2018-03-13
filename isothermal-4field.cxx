@@ -41,7 +41,6 @@ protected:
     
     // Read options
     Options *opt = Options::getRoot()->getSection("model");
-    mesh->periodicZ=true;
     
     /////////////////////////////////////////////////////////////////////
     // Normalisations
@@ -125,7 +124,7 @@ protected:
     OPTION(opt, vacuum_trans, 5e-6);
     OPTION(opt, vacuum_mult, 1e6);
 
-    OPTION(opt, vacuum_damp, 10);
+    OPTION(opt, vacuum_damp, 100.);
     OPTION(opt, vacuum_diffuse, 10);
 
     OPTION(opt, hyperresist, 1.0);
@@ -162,7 +161,7 @@ protected:
     R = sqrt(coord->g_yy) / rho_s;
 
     inv_dy = 1. / (sqrt(coord->g_yy) * coord->dy);
-    
+    mesh->communicate(inv_dy);
     /////////////////////////////////////////////////////////////////////
     // Equilibrium profiles
     
@@ -283,14 +282,14 @@ protected:
     
     phi -= Ti * n; // Ion diamagnetic drift
     
-    ntot = floor(n + N0, 0.0);    // Total density
+    ntot = floor(n + N0, 1e-10);    // Total density
     
     Field3D phitot = phi - Ti * N0; // Total electric potential, assuming omega0 = 0
     
     // Parallel flow
-     //Field3D vi = nvi / ntot;
-     Field3D vi = nvi;
-    // vi.splitYupYdown();
+    Field3D vi = nvi / ntot;
+    // Field3D vi = nvi;
+    vi.splitYupYdown();
     // vi.yup() = nvi.yup();
     // vi.ydown() = nvi.ydown();
     
@@ -400,9 +399,9 @@ protected:
       
       ddt(n) = 
         poisson(ntot, phitot) // ExB advection
-        //- Div_parP2(ntot, vi) // Parallel advection
-        //+ Div_parP(jtot)
-        //+ Div_parP2(ntot, jtot/ntot)
+        // - Div_parP2(ntot, vi) // Parallel advection
+        // + Div_parP(jtot)
+        // + Div_parP2(ntot, jtot/ntot)
         - Div_par_U1(ntot, vi - jtot/(ntot + 1e-4))
         + curvature(ntot * Te)  // Electron curvature drift
         + coord->Div_Perp_Lap_FV(viscosity,n, false)//viscosity*Delp2(n)
@@ -446,23 +445,27 @@ protected:
       ddt(nvi) =
         poisson(nvi, phitot) // ExB advection
         - Div_parP2(nvi, vi) // Parallel advection
-        // - curvature(nvi * Ti)  // Ion curvature drift
+        - curvature(nvi * Ti)  // Ion curvature drift
         - Grad_parP(ptot)    // pressure gradient
-        // + coord->Div_Perp_Lap_FV(viscosity,nvi, false) //viscosity*Delp2(nvi) // Perpendicular viscosity
-        // + viscosity_par * Diffusion_parP(vi) // Parallel viscosity
-
-        // - vacuum_damp*vac_mask*nvi // Damping in vacuum region
+	;
+      ddt(nvi) *= (1-vac_mask);
+      ddt(nvi) +=
+	coord->Div_Perp_Lap_FV(viscosity,nvi, false) //viscosity*Delp2(nvi) // Perpendicular viscosity
+        + viscosity_par * Diffusion_parP(nvi) // Parallel viscosity
+        - vacuum_damp*vac_mask*nvi // Damping in vacuum region
         ;
-      // a = poisson(nvi, phitot);
-      // b = Div_parP2(nvi, vi);
-      // c = curvature(nvi * Ti);
-      // d = Grad_parP(ptot);
+      ddt(nvi) *= (1-vac_mask);
+
+      a = poisson(nvi, phitot);
+      b = Div_parP2(nvi, vi);
+      c = curvature(nvi * Ti);
+      d = Grad_parP(ptot);
     }
 
     // Parallel Diffusion (for blob initial conditions)
     if (Diffusion){
       ddt(n) =
-	1e4*Diffusion_parP(n);
+	viscosity_par*Diffusion_parP(n);
       ddt(nvi) = 0.0;
       ddt(Ajpar) = 0.0;
       ddt(omega) = 0.0;
@@ -528,12 +531,13 @@ protected:
       yup = f.yup();
       ydown = f.ydown();
     }
-    
+  
     Field3D Bup = Bxyz.yup();
     Field3D Bdown = Bxyz.ydown();
     
     Field3D result;
     result.allocate();
+    result = 0.0;
     
     for(auto &i : result.region(RGN_NOBNDRY)) {
       auto yp = i.yp();
