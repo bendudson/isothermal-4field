@@ -1,8 +1,8 @@
 #
 # 
 
-nout = 500
-timestep = 1
+nout = 100
+timestep = 100
 
 grid = "tokamak.fci.nc"
 
@@ -46,6 +46,7 @@ resistivity = 5e-6
 Ti = 100.
 Te = 100.
 
+drifts = false         # Include currents and electric fields?
 electromagnetic = true
 FiniteElMass = true
 
@@ -68,8 +69,8 @@ function = exp(-((x-0.5)/0.1)^2 - ((zl-0.5)/0.1)^2)
 bndry_par_all = parallel_neumann
 
 [nvi]
-bndry_par_yup = parallel_dirichlet(1.0)
-bndry_par_ydown = parallel_dirichlet(-1.0)
+bndry_par_yup = parallel_neumann #parallel_dirichlet(1.0)
+bndry_par_ydown = parallel_neumann #parallel_dirichlet(-1.0)
 
 [vi]
 bndry_par_yup = parallel_dirichlet(1.0)

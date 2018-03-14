@@ -29,6 +29,8 @@ public:
 
 };
 
+const Field3D Div_a_Laplace_xz(const Field3D &a, const Field3D &f);
+const Field3D Div_a_Laplace_xz(const Field3D &f);
 
 //Field3D a,b,c,d;
 
@@ -83,6 +85,7 @@ protected:
     
     OPTION(opt, resistivity, 0.0);
     OPTION(opt, viscosity, 0.0);     // [m^2/s] . Normalised later
+    OPTION(opt, diffusion, viscosity); // [m^2/s] . Normalised later
     OPTION(opt, viscosity_par, 0.0); // [m^2/s] . Normalised later
     
     BoutReal Coulomb = 6.6 - 0.5*log(Nnorm/1e20) + 1.5*log(Te*Tnorm); // Coulomb logarithm
@@ -119,6 +122,7 @@ protected:
     viscosity     *= Bnorm / Tnorm;
     viscosity_par *= Bnorm / Tnorm;
     resistivity *= SI::qe*Nnorm / Bnorm;
+    diffusion *= Bnorm / Tnorm;
     
     output.write("\tNormalised viscosity = %e, parallel viscosity = %e, resistivity = %e\n", viscosity, viscosity_par, resistivity);
 
@@ -184,7 +188,8 @@ protected:
     /////////////////////////////////////////////////////////////////////
     //
     // Solve for electromagnetic potential, vorticity, density and parallel momentum
-    
+
+    OPTION(opt, drifts, true); // Include drifts, electric fields?
     OPTION(opt, electromagnetic, true);
     OPTION(opt, FiniteElMass, false);
     
@@ -216,6 +221,7 @@ protected:
 
     ntot.setBoundary("ntot");
     jtot.setBoundary("jtot");
+    vi.setBoundary("vi");
     
     return 0;
   }
@@ -224,6 +230,11 @@ protected:
 
     ddt(omega) = 0.0;
     mesh->communicate(Apar, omega, n, nvi);
+    
+    Apar.applyParallelBoundary();
+    omega.applyParallelBoundary();
+    n.applyParallelBoundary();
+    nvi.applyParallelBoundary();
     
     // Apply Dirichlet boundary conditions in z
     for(int i=0;i<mesh->LocalNx;i++) {
@@ -235,24 +246,31 @@ protected:
         omega(i,j,mesh->LocalNz-1) = -omega(i,j,mesh->LocalNz-2);
       }
     }
-    
-    ////////////////////////////////////
-    // Get phi from vorticity
-    phi = phiSolver->solve(omega, 0.0);
-    mesh->communicate(phi);
-    
-    phi -= Ti * n; // Ion diamagnetic drift
+
+    if (drifts) {
+      ////////////////////////////////////
+      // Get phi from vorticity
+      phi = phiSolver->solve(omega, 0.0);
+      mesh->communicate(phi);
+      
+      phi -= Ti * n; // Ion diamagnetic drift
+    } else {
+      phi = 0.0;
+    }
     
     ntot = floor(n + N0, 0.0);    // Total density
+      
+    Field3D ntot_lim = floor(ntot, 1e-4);
     
     Field3D phitot = phi - Ti * N0; // Total electric potential, assuming omega0 = 0
     
     // Parallel flow
     //Field3D vi = nvi / ntot;
-    Field3D vi = nvi;
+    vi = nvi / ntot_lim;
     vi.splitYupYdown();
-    vi.yup() = nvi.yup();
-    vi.ydown() = nvi.ydown();
+    vi.yup() = nvi.yup() / floor(n.yup() + N0, 1e-4);
+    vi.ydown() = nvi.ydown() / floor(n.ydown() + N0, 1e-4);
+    vi.applyParallelBoundary();
     
     Field3D ptot = (Te + Ti) * ntot; // Total pressure
 
@@ -262,39 +280,40 @@ protected:
     ////////////////////////////////////
     // Ohm's law
 
-    if (electromagnetic) {
-      if (!FiniteElMass) {
-        // Electromagnetic + zero electron mass
-        // Get J from Apar
-        Apar = Ajpar;
-        Jpar = -(1./beta) * Delp2(Apar);
+    if (drifts) {
+      if (electromagnetic) {
+        if (!FiniteElMass) {
+          // Electromagnetic + zero electron mass
+          // Get J from Apar
+          Apar = Ajpar;
+          Jpar = -(1./beta) * Div_a_Laplace_xz(Apar);
+        } else {
+          // Electromagnetic + finite electron mass
+          Apar = psiSolver->solve(Ajpar + nvi/mi_me, 0.0);
+          Jpar = mi_me*ntot*(Ajpar - Apar) + nvi;
+        }
       } else {
-        // Electromagnetic + finite electron mass
-        Apar = psiSolver->solve(Ajpar + nvi/mi_me, 0.0);
-        Jpar = mi_me*ntot*(Ajpar - Apar) + nvi;
-        
-        // Field3D ntot_zero = floor(n + N0, 0.0);
-        // psiSolver->setCoefA(ntot_zero);
-        // Apar = psiSolver->solve(ntot_zero*Ajpar + nvi/mi_me, 0.0);
-        // Jpar = mi_me*ntot_zero*(Ajpar - Apar) + nvi;
+        // Electrostatic
+        if (FiniteElMass) {
+          // Ajpar = -me_mi v_||e
+          Jpar = ntot * Ajpar*mi_me + nvi;
+        } else {
+          // Electrostatic + zero electron mass
+          Jpar = Grad_parP(Te*ntot - phitot) / (resistivity*(1.0 + vac_mask*vacuum_mult));
+        }
+      }
+      mesh->communicate(Jpar);
+      Jpar.applyBoundary("neumann");
+      for(int i=0;i<mesh->LocalNx;i++) {
+        for(int j=0;j<mesh->LocalNy;j++) {
+          Jpar(i,j,0) = Jpar(i,j,1);
+          Jpar(i,j,mesh->LocalNz-1) = Jpar(i,j,mesh->LocalNz-2);
+        }
       }
     } else {
-      // Electrostatic
-      if (FiniteElMass) {
-        // Ajpar = -me_mi v_||e
-        Jpar = ntot * Ajpar*mi_me + nvi;
-      } else {
-        // Electrostatic + zero electron mass
-        Jpar = Grad_parP(Te*ntot - phitot) / (resistivity*(1.0 + vac_mask*vacuum_mult));
-      }
-    }
-    mesh->communicate(Jpar);
-    Jpar.applyBoundary("neumann");
-    for(int i=0;i<mesh->LocalNx;i++) {
-      for(int j=0;j<mesh->LocalNy;j++) {
-        Jpar(i,j,0) = Jpar(i,j,1);
-        Jpar(i,j,mesh->LocalNz-1) = Jpar(i,j,mesh->LocalNz-2);
-      }
+      Jpar = Apar = Ajpar = 0.0;
+
+      phitot = 0.0;
     }
     
     // Poloidal flux
@@ -314,40 +333,42 @@ protected:
     // jtot.yup() /= Bxyz.yup();
     // jtot.ydown() /= Bxyz.ydown();
 
-    
-    ////////////////////////////////////
-    
-    // Vorticity
-    {
-      TRACE("ddt(omega)");
-      ddt(omega) = 
-        poisson(omega, phitot)   // ExB advection
-        - Div_parP2(omega, vi)   // Parallel advection
-        + Div_parP(jtot)          // Parallel current
-        + curvature(ptot)         // Diamagnetic current (ballooning drive)
-        + viscosity*(1.0 + vac_mask*vacuum_mult)*Delp2(omega)  // Viscosity
-        - vacuum_damp*vac_mask*omega // Damping in vacuum region
-        ;
-      
-      ddt(omega) *= 1.0 - vac_mask;
+    if (!drifts) {
+      jtot = 0.0;
     }
     
-    // Perturbed vector potential
-    if (electromagnetic || FiniteElMass) {
-      TRACE("ddt(Ajpar)");
+    ////////////////////////////////////
 
-      Field3D Jpar2 = Delp2(Jpar);
-      
-      ddt(Ajpar) = 
-        Grad_parP(Te*ntot - phitot)
-        - resistivity*(1.0 + vac_mask*vacuum_mult) * Jpar // Resistivity
-        + hyperresist * Jpar2  // Hyper-resistivity
-        ;
-
-      // a = Grad_parP(Te*ntot);
-      // b = -Grad_parP(phitot);
-      // c = -resistivity*(1.0 + vac_mask*vacuum_mult) * Jpar;
-      // d = hyperresist * Jpar2;
+    if (drifts) {
+      // Vorticity
+      {
+        TRACE("ddt(omega)");
+        ddt(omega) = 
+          poisson(omega, phitot)   // ExB advection
+          - Div_parP2(omega, vi)   // Parallel advection
+          + Div_parP(jtot)          // Parallel current
+          + curvature(ptot)         // Diamagnetic current (ballooning drive)
+          + viscosity*(1.0 + vac_mask*vacuum_mult)*Div_a_Laplace_xz(omega)  // Viscosity
+          - vacuum_damp*vac_mask*omega // Damping in vacuum region
+          ;
+        
+        ddt(omega) *= 1.0 - vac_mask;
+      }
+    
+      // Perturbed vector potential
+      if (electromagnetic || FiniteElMass) {
+        TRACE("ddt(Ajpar)");
+        
+        Field3D Jpar2 = Div_a_Laplace_xz(Jpar);
+        
+        ddt(Ajpar) = 
+          Grad_parP(Te*ntot - phitot)
+          - resistivity*(1.0 + vac_mask*vacuum_mult) * Jpar // Resistivity
+          + hyperresist * Jpar2  // Hyper-resistivity
+          ;
+      }
+    } else {
+      ddt(Ajpar) = ddt(omega) = 0.0;
     }
     
     // Perturbed density
@@ -356,12 +377,9 @@ protected:
       
       ddt(n) = 
         poisson(ntot, phitot) // ExB advection
-        //- Div_parP2(ntot, vi) // Parallel advection
-        //+ Div_parP(jtot)
-        //+ Div_parP2(ntot, jtot/ntot)
-        - Div_par_U1(ntot, vi - jtot/(ntot + 1e-4))
+        - Div_par_U1(ntot, vi - jtot/ntot_lim)  // Parallel advection
         + curvature(ntot * Te)  // Electron curvature drift
-        + viscosity*Delp2(n)
+        + diffusion*Div_a_Laplace_xz(n)
         ;
       
       if (vacuum_diffuse > 0.0) {
@@ -404,9 +422,10 @@ protected:
         - Div_par_U1(nvi, vi) // Parallel advection
         - curvature(nvi * Ti)  // Ion curvature drift
         - Grad_parP(ptot)    // pressure gradient
-        + viscosity*Delp2(nvi) // Perpendicular viscosity
-        + viscosity_par * Diffusion_parP(vi) // Parallel viscosity
 
+        + diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
+        + viscosity*Div_a_Laplace_xz(n,vi)     // Perpendicular viscosity
+        + viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
         - vacuum_damp*vac_mask*nvi // Damping in vacuum region
         ;
     }
@@ -455,9 +474,10 @@ protected:
   }
 
   // Parallel diffusion
-  Field3D Diffusion_parP(const Field3D &f) {
+  Field3D Diffusion_parP(const Field3D &D, const Field3D &f) {
     TRACE("Diffusion_parP");
     Field3D yup, ydown;
+    Field3D Dup, Ddown;
     
     if (!f.hasYupYdown()) {
       // Communicate to get yup and ydown fields
@@ -472,6 +492,20 @@ protected:
       yup = f.yup();
       ydown = f.ydown();
     }
+
+    if (!D.hasYupYdown()) {
+      // Communicate to get yup and ydown fields
+      Field3D fcom = f;
+      mesh->communicate(fcom);
+      fcom.applyParallelBoundary("parallel_neumann");
+      //fcom.applyParallelBoundary("parallel_dirichlet_midpoint");
+      
+      Dup = fcom.yup();
+      Ddown = fcom.ydown();
+    } else {
+      Dup = D.yup();
+      Ddown = D.ydown();
+    }
     
     Field3D Bup = Bxyz.yup();
     Field3D Bdown = Bxyz.ydown();
@@ -482,14 +516,17 @@ protected:
     for(auto &i : result.region(RGN_NOBNDRY)) {
       auto yp = i.yp();
       auto ym = i.ym();
-
+      
       // Magnetic field half-way between cells
       // This is because the parallel gradient doesn't include
       // gradients of B
       BoutReal Bp = 0.5*(Bup[yp] + Bxyz[i]);
-      BoutReal Bm = 0.5*(Bup[ym] + Bxyz[i]);
+      BoutReal Bm = 0.5*(Bdown[ym] + Bxyz[i]);
+
+      BoutReal Dp = 0.5*(Dup[yp] + D[i]);
+      BoutReal Dm = 0.5*(Ddown[ym] + D[i]);
       
-      result[i] = ( (yup[yp]/Bp) - f[i]*(1./Bp + 1./Bm) + (ydown[ym]/Bm)) * SQ(inv_dy[i]) * Bxyz[i];
+      result[i] = ( (yup[yp]*Dp/Bp) - f[i]*(Dp/Bp + Dm/Bm) + (ydown[ym]*Dm/Bm)) * SQ(inv_dy[i]) * Bxyz[i];
     }
     
     return result;
@@ -600,6 +637,7 @@ private:
   Field3D Jpar;   // Perturbed parallel current density
   Field3D phi;    // Electrostatic potential
   Field3D psi;    // Poloidal flux
+  Field3D vi;     // Parallel flow velocity
 
   Field3D jtot; // Total current
   Field3D ntot; // Total density
@@ -617,6 +655,7 @@ private:
   
   BoutReal resistivity; // [Normalised]
   BoutReal hyperresist; // Hyper-resistivity
+  BoutReal diffusion;   // Density diffusion [Normalised]
   BoutReal viscosity;   // Perpendicular viscosity [Normalised]
   BoutReal viscosity_par; // Parallel viscosity [Normalised]
   
@@ -639,9 +678,11 @@ private:
   BoutReal vacuum_mult; // Multiply dissipation in vacuum
   BoutReal vacuum_damp; // Damping in vacuum region
   BoutReal vacuum_diffuse; // Density diffusion at low density
-  
+
+  bool drifts;          // Include currents and electric fields?
   bool electromagnetic; // Include electromagnetic effects?
   bool FiniteElMass;    // Finite electron mass?
+  bool boussinesq;      // Use the Boussinesq approximation?
 };
 
 ///////////////////////////////////////////////////////////
@@ -687,3 +728,129 @@ void ParDirichletMidpoint::apply(Field3D &f, BoutReal t) {
 }
 
 BOUTMAIN(MergingFlux);
+
+// Div ( a Laplace_xz(f) )  -- Vorticity
+const Field3D Div_a_Laplace_xz(const Field3D &a, const Field3D &f) {
+  Mesh *mesh = a.getMesh();
+
+  Field3D result(mesh);
+  result = 0.0;
+
+  Coordinates *coord = mesh->coordinates();
+
+  // Flux in x
+
+  int xs = mesh->xstart - 1;
+  int xe = mesh->xend;
+  
+  for (int i = xs; i <= xe; i++)
+    for (int j = mesh->ystart; j <= mesh->yend; j++) {
+      for (int k = 0; k < mesh->LocalNz; k++) {
+        // Calculate flux from i to i+1
+
+        BoutReal fout =
+            (coord->J(i, j) * a(i, j, k) * coord->g11(i, j) +
+             coord->J(i + 1, j) * a(i + 1, j, k) * coord->g11(i + 1, j)) *
+            (f(i + 1, j, k) - f(i, j, k)) /
+            (coord->dx(i, j) + coord->dx(i + 1, j));
+
+        result(i, j, k) += fout / (coord->dx(i, j) * coord->J(i, j));
+        result(i + 1, j, k) -= fout / (coord->dx(i + 1, j) * coord->J(i + 1, j));
+      }
+    }
+  
+  // Z flux
+  // Easier since all metrics constant in Z
+
+  for (int i = mesh->xstart; i <= mesh->xend; i++)
+    for (int j = mesh->ystart; j <= mesh->yend; j++) {
+      // Coefficient in front of df/dy term
+      BoutReal coef =
+          coord->g_23(i, j) /
+          (coord->dy(i, j + 1) + 2. * coord->dy(i, j) + coord->dy(i, j - 1)) /
+          SQ(coord->J(i, j) * coord->Bxy(i, j));
+
+      for (int k = 0; k < mesh->LocalNz; k++) {
+        // Calculate flux between k and k+1
+        int kp = (k + 1) % (mesh->LocalNz);
+
+        BoutReal fout =
+            0.5 * (a(i, j, k) + a(i, j, kp)) * coord->g33(i, j) *
+            (
+                // df/dz
+                (f(i, j, kp) - f(i, j, k)) / coord->dz
+
+                // - g_yz * df/dy / SQ(J*B)
+                - coef * (f.yup()(i, j + 1, k) + f.yup()(i, j + 1, kp) -
+                          f.ydown()(i, j - 1, k) - f.ydown()(i, j - 1, kp)));
+
+        result(i, j, k) += fout / coord->dz;
+        result(i, j, kp) -= fout / coord->dz;
+      }
+    }
+  
+  return result;
+}
+
+// Div ( Laplace_xz(f) )
+const Field3D Div_a_Laplace_xz(const Field3D &f) {
+  Mesh *mesh = f.getMesh();
+
+  Field3D result(mesh);
+  result = 0.0;
+
+  Coordinates *coord = mesh->coordinates();
+
+  // Flux in x
+
+  int xs = mesh->xstart - 1;
+  int xe = mesh->xend;
+  
+  for (int i = xs; i <= xe; i++)
+    for (int j = mesh->ystart; j <= mesh->yend; j++) {
+      for (int k = 0; k < mesh->LocalNz; k++) {
+        // Calculate flux from i to i+1
+
+        BoutReal fout =
+            (coord->J(i, j) * coord->g11(i, j) +
+             coord->J(i + 1, j) * coord->g11(i + 1, j)) *
+            (f(i + 1, j, k) - f(i, j, k)) /
+            (coord->dx(i, j) + coord->dx(i + 1, j));
+
+        result(i, j, k) += fout / (coord->dx(i, j) * coord->J(i, j));
+        result(i + 1, j, k) -= fout / (coord->dx(i + 1, j) * coord->J(i + 1, j));
+      }
+    }
+  
+  // Z flux
+  // Easier since all metrics constant in Z
+
+  for (int i = mesh->xstart; i <= mesh->xend; i++)
+    for (int j = mesh->ystart; j <= mesh->yend; j++) {
+      // Coefficient in front of df/dy term
+      BoutReal coef =
+          coord->g_23(i, j) /
+          (coord->dy(i, j + 1) + 2. * coord->dy(i, j) + coord->dy(i, j - 1)) /
+          SQ(coord->J(i, j) * coord->Bxy(i, j));
+
+      for (int k = 0; k < mesh->LocalNz; k++) {
+        // Calculate flux between k and k+1
+        int kp = (k + 1) % (mesh->LocalNz);
+
+        BoutReal fout =
+            coord->g33(i, j) *
+            (
+                // df/dz
+                (f(i, j, kp) - f(i, j, k)) / coord->dz
+
+                // - g_yz * df/dy / SQ(J*B)
+                - coef * (f.yup()(i, j + 1, k) + f.yup()(i, j + 1, kp) -
+                          f.ydown()(i, j - 1, k) - f.ydown()(i, j - 1, kp)));
+
+        result(i, j, k) += fout / coord->dz;
+        result(i, j, kp) -= fout / coord->dz;
+      }
+    }
+  
+  return result;
+}
