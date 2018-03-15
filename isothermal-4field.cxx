@@ -421,7 +421,8 @@ protected:
         poisson(nvi, phitot) // ExB advection
         - Div_par_U1(nvi, vi) // Parallel advection
         - curvature(nvi * Ti)  // Ion curvature drift
-        - Grad_parP(ptot)    // pressure gradient
+        //- Grad_parP(ptot)    // pressure gradient
+        - Grad_parP((Te + Ti) * (n + N0)) // Pressure gradient, no flooring at 0
 
         + diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
         + viscosity*Div_a_Laplace_xz(n,vi)     // Perpendicular viscosity
