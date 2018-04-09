@@ -120,7 +120,7 @@ protected:
     
     output.write("\tNormalised viscosity = %e, parallel viscosity = %e, resistivity = %e\n", viscosity, viscosity_par, resistivity);
 
-    OPTION(opt, vacuum_density, 2e-4);
+    OPTION(opt, vacuum_density, 2e-3);
     OPTION(opt, vacuum_trans, 5e-6);
     OPTION(opt, vacuum_mult, 1e6);
 
@@ -191,16 +191,21 @@ protected:
     OPTION(opt, Diffusion, false);
     OPTION(opt, curvilinear, false);
 
+    string mask;
+    FieldFactory fact(mesh);
+
+    OPTION(opt, mask, "1.0");
+    vac_mask = fact.create3D(mask);
+
     if(curvilinear){
       mesh->periodicZ=true;
     }
       
-    
     omega.mergeYupYdown();
     n.mergeYupYdown();
     nvi.mergeYupYdown();
     Ajpar.mergeYupYdown();
-    
+
     SOLVE_FOR3(omega, n, nvi);
 
     if (electromagnetic || FiniteElMass) {
@@ -239,14 +244,14 @@ protected:
 
     //   SAVE_REPEAT(Apar);
     // }
-    
+
     // Additional outputs
     SAVE_REPEAT3(phi, Jpar, psi);
     SAVE_REPEAT2(ddt(nvi), ddt(n));
     
     n.splitYupYdown();
     SAVE_REPEAT2(n.yup(), n.ydown());
-    SAVE_REPEAT(vac_mask);
+    SAVE_ONCE(vac_mask);
 
     ntot.setBoundary("ntot");
     jtot.setBoundary("jtot");
@@ -296,7 +301,7 @@ protected:
     Field3D ptot = (Te + Ti) * ntot; // Total pressure
 
     // 1 in the vacuum, 0 where there is plasma
-    vac_mask = (1.0 - tanh( (ntot - vacuum_density) / vacuum_trans )) / 2.0;
+    // vac_mask = (1.0 - tanh( (ntot - vacuum_density) / vacuum_trans )) / 2.0;
     
     ////////////////////////////////////
     // Ohm's law
@@ -312,7 +317,7 @@ protected:
         // Electromagnetic + finite electron mass
         Apar = psiSolver->solve(Ajpar + nvi/mi_me, 0.0);
         Jpar = mi_me*ntot*(Ajpar - Apar) + nvi;
-        
+
         // Field3D ntot_zero = floor(n + N0, 0.0);
         // psiSolver->setCoefA(ntot_zero);
         // Apar = psiSolver->solve(ntot_zero*Ajpar + nvi/mi_me, 0.0);
@@ -330,6 +335,7 @@ protected:
     }
     mesh->communicate(Jpar);
     Jpar.applyBoundary("neumann");
+
     for(int i=0;i<mesh->LocalNx;i++) {
       for(int j=0;j<mesh->LocalNy;j++) {
         Jpar(i,j,0) = Jpar(i,j,1);
@@ -356,7 +362,6 @@ protected:
 
     
     ////////////////////////////////////
-    
     // Vorticity
     {
       TRACE("ddt(omega)");
@@ -371,10 +376,10 @@ protected:
       
       ddt(omega) *= 1.0 - vac_mask;
 
-      c = - curvature(ptot); // Debugging variable
+      c = curvature(ptot); // Debugging variable
 
     }
-    
+
     // Perturbed vector potential
     if (electromagnetic || FiniteElMass) {
       TRACE("ddt(Ajpar)");
@@ -392,7 +397,7 @@ protected:
       // c = -resistivity*(1.0 + vac_mask*vacuum_mult) * Jpar;
       // d = hyperresist * Jpar2;
     }
-    
+
     // Perturbed density
     {
       TRACE("ddt(n)");
@@ -406,6 +411,8 @@ protected:
         + curvature(ntot * Te)  // Electron curvature drift
         + coord->Div_Perp_Lap_FV(viscosity,n, false)//viscosity*Delp2(n)
         ;
+
+      a = curvature(ntot * Te);
       
       if (vacuum_diffuse > 0.0) {
         // Add perpendicular diffusion at small density
@@ -437,7 +444,7 @@ protected:
         }
       }
     }
-    
+
     // Parallel momentum
     {
       TRACE("ddt(nvi)");
@@ -456,10 +463,10 @@ protected:
         ;
       ddt(nvi) *= (1-vac_mask);
 
-      a = poisson(nvi, phitot);
-      b = Div_parP2(nvi, vi);
-      c = curvature(nvi * Ti);
-      d = Grad_parP(ptot);
+      // a = poisson(nvi, phitot);
+      // b = Div_parP2(nvi, vi);
+      // c = curvature(nvi * Ti);
+      // d = Grad_parP(ptot);
     }
 
     // Parallel Diffusion (for blob initial conditions)
@@ -470,6 +477,7 @@ protected:
       ddt(Ajpar) = 0.0;
       ddt(omega) = 0.0;
     }
+
     return 0;
   }
 
