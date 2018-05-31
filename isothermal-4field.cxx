@@ -193,10 +193,16 @@ protected:
     OPTION(opt, electromagnetic, true);
     OPTION(opt, FiniteElMass, false);
     
-    SOLVE_FOR3(omega, n, nvi);
-
-    if (electromagnetic || FiniteElMass) {
-      SOLVE_FOR(Ajpar);
+    SOLVE_FOR2(n, nvi);
+    
+    if (drifts) {
+      SOLVE_FOR(omega);
+      if (electromagnetic || FiniteElMass) {
+        SOLVE_FOR(Ajpar);
+      }
+      SAVE_REPEAT3(phi, Jpar, psi);
+    } else {
+      omega = 0.0;
     }
     
     /////////////////////////////////////////////////////////////////////
@@ -216,7 +222,6 @@ protected:
     }
     
     // Additional outputs
-    SAVE_REPEAT3(phi, Jpar, psi);
     SAVE_REPEAT(vac_mask);
 
     ntot.setBoundary("ntot");
@@ -577,12 +582,13 @@ protected:
     return result;
   }
   
-  // Parallel divergence of a product Div_par(fv)
-  // Written in skew-symmetric form to suppress zigzag modes
+  /// Parallel divergence of a product Div_par(fv)
+  /// Written in skew-symmetric form to suppress zigzag modes
   Field3D Div_parP2(const Field3D f, const Field3D v) {
     return 0.5*(Div_parP(f*v) + v*Grad_parP(f) + f*Div_parP(v));
   }
 
+  /// First order upwinding method
   Field3D Div_par_U1(const Field3D f, const Field3D v) {
     Field3D result;
     result.allocate();

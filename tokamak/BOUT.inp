@@ -53,7 +53,8 @@ FiniteElMass = true
 vacuum_density = 1e-04
 vacuum_trans = 5e-06
 
-vacuum_damp = 10
+vacuum_mult = 0.0
+vacuum_damp = 0.0
 vacuum_diffuse = -1
 
 [all]
@@ -62,19 +63,21 @@ bndry_all = neumann
 
 [n]
 
-scale = 1e-3
 zl = z / (2*pi)
-function = exp(-((x-0.5)/0.1)^2 - ((zl-0.5)/0.1)^2)
+function = 1e-6 + 1e-3 * exp(-((x-0.7)/0.1)^2 - ((zl-0.3)/0.1)^2)
 
 bndry_par_all = parallel_neumann
 
 [nvi]
-bndry_par_yup = parallel_neumann #parallel_dirichlet(1.0)
-bndry_par_ydown = parallel_neumann #parallel_dirichlet(-1.0)
+
+bndry_par_all = parallel_dirichlet
 
 [vi]
-bndry_par_yup = parallel_dirichlet(1.0)
-bndry_par_ydown = parallel_dirichlet(-1.0)
+
+bndry_par_all = parallel_dirichlet
+
+#bndry_par_yup = parallel_dirichlet(1.0)
+#bndry_par_ydown = parallel_dirichlet(-1.0)
 
 [ntot]
 bndry_par_all = parallel_neumann
