@@ -376,11 +376,16 @@ protected:
       TRACE("ddt(n)");
       
       ddt(n) = 
-        poisson(ntot, phitot) // ExB advection
         - Div_par_U1(ntot, vi - jtot/ntot_lim)  // Parallel advection
-        + curvature(ntot * Te)  // Electron curvature drift
         + diffusion*Div_a_Laplace_xz(n)
         ;
+
+      if (drifts) {
+        ddt(n) +=
+          poisson(ntot, phitot) // ExB advection
+          + curvature(ntot * Te)  // Electron curvature drift
+          ;
+      }
       
       if (vacuum_diffuse > 0.0) {
         // Add perpendicular diffusion at small density
@@ -418,9 +423,7 @@ protected:
       TRACE("ddt(nvi)");
       
       ddt(nvi) =
-        poisson(nvi, phitot) // ExB advection
         - Div_par_U1(nvi, vi) // Parallel advection
-        - curvature(nvi * Ti)  // Ion curvature drift
         //- Grad_parP(ptot)    // pressure gradient
         - Grad_parP((Te + Ti) * (n + N0)) // Pressure gradient, no flooring at 0
 
@@ -429,6 +432,13 @@ protected:
         + viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
         - vacuum_damp*vac_mask*nvi // Damping in vacuum region
         ;
+
+      if (drifts) {
+        ddt(nvi) +=
+          poisson(nvi, phitot) // ExB advection
+          - curvature(nvi * Ti)  // Ion curvature drift
+          ;
+      }
     }
     
     return 0;
