@@ -126,12 +126,6 @@ protected:
     
     output.write("\tNormalised viscosity = %e, parallel viscosity = %e, resistivity = %e\n", viscosity, viscosity_par, resistivity);
 
-    OPTION(opt, vacuum_density, 1e-5);
-    OPTION(opt, vacuum_trans, 5e-6);
-    OPTION(opt, vacuum_mult, 1e6);
-    OPTION(opt, vacuum_damp, 10);
-    OPTION(opt, vacuum_diffuse, 10);
-
     OPTION(opt, hyperresist, 1.0);
     
     /////////////////////////////////////////////////////////////////////
@@ -192,6 +186,9 @@ protected:
     OPTION(opt, drifts, true); // Include drifts, electric fields?
     OPTION(opt, electromagnetic, true);
     OPTION(opt, FiniteElMass, false);
+
+    OPTION(opt, n_div_integrate, false);
+    OPTION(opt, nvi_div_integrate, false);
     
     SOLVE_FOR2(n, nvi);
     
@@ -220,9 +217,6 @@ protected:
 
       SAVE_REPEAT(Apar);
     }
-    
-    // Additional outputs
-    SAVE_REPEAT(vac_mask);
 
     ntot.setBoundary("ntot");
     jtot.setBoundary("jtot");
@@ -233,13 +227,17 @@ protected:
   
   int rhs(BoutReal t) {
 
-    ddt(omega) = 0.0;
-    mesh->communicate(Apar, omega, n, nvi);
+    if (drifts) {
+      mesh->communicate(Apar, omega, n, nvi);
+      Apar.applyParallelBoundary();
+      omega.applyParallelBoundary();
+      
+    } else {
+      mesh->communicate(n, nvi);
+    }
     
-    Apar.applyParallelBoundary();
-    omega.applyParallelBoundary();
     n.applyParallelBoundary();
-    nvi.applyParallelBoundary();
+    // Note: Boundary applied to vi rather than nvi
     
     // Apply Dirichlet boundary conditions in z
     for(int i=0;i<mesh->LocalNx;i++) {
@@ -270,17 +268,46 @@ protected:
     Field3D phitot = phi - Ti * N0; // Total electric potential, assuming omega0 = 0
     
     // Parallel flow
-    //Field3D vi = nvi / ntot;
     vi = nvi / ntot_lim;
+    Field3D momflux = nvi * vi; // Momentum flux
+    
+    // Apply boundary conditions to v
     vi.splitYupYdown();
-    vi.yup() = nvi.yup() / floor(n.yup() + N0, 1e-4);
-    vi.ydown() = nvi.ydown() / floor(n.ydown() + N0, 1e-4);
+    vi.yup().allocate();
+    vi.ydown().allocate();
     vi.applyParallelBoundary();
+
+    // Ensure that boundary conditions are consistent
+    // between v, nv and momentum flux
+    
+    momflux.splitYupYdown();
+    for (const auto &reg : mesh->getBoundariesPar()) {
+      // Using the values of density and velocity on the boundary
+      const Field3D &n_next = n.ynext(reg->dir);
+      const Field3D &vi_next = vi.ynext(reg->dir);
+
+      // Set the momentum and momentum flux
+      Field3D &nvi_next = nvi.ynext(reg->dir);
+      Field3D &momflux_next = momflux.ynext(reg->dir);
+      momflux_next.allocate();
+        
+      for (reg->first(); !reg->isDone(); reg->next()) {
+        // Density at the boundary
+        BoutReal n_b = 0.5*(n_next(reg->x, reg->y+reg->dir, reg->z) +
+                            n(reg->x, reg->y, reg->z));
+        // Velocity at the boundary
+        BoutReal vi_b = 0.5*(vi_next(reg->x, reg->y+reg->dir, reg->z) +
+                             vi(reg->x, reg->y, reg->z));
+        
+        nvi_next(reg->x, reg->y+reg->dir, reg->z) = 
+          2.*n_b*vi_b - nvi(reg->x, reg->y, reg->z);
+
+        momflux_next(reg->x, reg->y+reg->dir, reg->z) = 
+          2.*n_b*vi_b*vi_b - momflux(reg->x, reg->y, reg->z);
+      }
+    }
     
     Field3D ptot = (Te + Ti) * ntot; // Total pressure
-
-    // 1 in the vacuum, 0 where there is plasma
-    vac_mask = (1.0 - tanh( (ntot - vacuum_density) / vacuum_trans )) / 2.0;
     
     ////////////////////////////////////
     // Ohm's law
@@ -304,7 +331,7 @@ protected:
           Jpar = ntot * Ajpar*mi_me + nvi;
         } else {
           // Electrostatic + zero electron mass
-          Jpar = Grad_parP(Te*ntot - phitot) / (resistivity*(1.0 + vac_mask*vacuum_mult));
+          Jpar = Grad_parP(Te*ntot - phitot) / resistivity;
         }
       }
       mesh->communicate(Jpar);
@@ -353,11 +380,8 @@ protected:
           - Div_parP2(omega, vi)   // Parallel advection
           + Div_parP(jtot)          // Parallel current
           + curvature(ptot)         // Diamagnetic current (ballooning drive)
-          + viscosity*(1.0 + vac_mask*vacuum_mult)*Div_a_Laplace_xz(omega)  // Viscosity
-          - vacuum_damp*vac_mask*omega // Damping in vacuum region
+          + viscosity*Div_a_Laplace_xz(omega)  // Viscosity
           ;
-        
-        ddt(omega) *= 1.0 - vac_mask;
       }
     
       // Perturbed vector potential
@@ -368,58 +392,66 @@ protected:
         
         ddt(Ajpar) = 
           Grad_parP(Te*ntot - phitot)
-          - resistivity*(1.0 + vac_mask*vacuum_mult) * Jpar // Resistivity
+          - resistivity * Jpar // Resistivity
           + hyperresist * Jpar2  // Hyper-resistivity
           ;
       }
-    } else {
-      ddt(Ajpar) = ddt(omega) = 0.0;
     }
     
     // Perturbed density
     {
       TRACE("ddt(n)");
       
-      ddt(n) = 
-        - Div_par_U1(ntot, vi - jtot/ntot_lim)  // Parallel advection
-        + diffusion*Div_a_Laplace_xz(n)
+      ddt(n) = 0.0
+        //diffusion*Div_a_Laplace_xz(n)
         ;
 
+      if (n_div_integrate) {
+        ddt(n) -= Div_par_integrate(nvi);
+        
+        if (drifts) {
+          /*
+          Field3D jflux = jtot/ntot_lim;
+
+          jflux.splitYupYdown();
+          for (const auto &reg : mesh->getBoundariesPar()) {
+            // Using the values of density and velocity on the boundary
+            const Field3D &ntot_next = ntot_lim.ynext(reg->dir);
+            const Field3D &jtot_next = jtot.ynext(reg->dir);
+            
+            // Set the momentum and momentum flux
+            Field3D &nvi_next = nvi.ynext(reg->dir);
+            Field3D &momflux_next = momflux.ynext(reg->dir);
+            momflux_next.allocate();
+            
+            for (reg->first(); !reg->isDone(); reg->next()) {
+              // Density at the boundary
+              BoutReal n_b = 0.5*(n_next(reg->x, reg->y+reg->dir, reg->z) +
+                                  n(reg->x, reg->y, reg->z));
+              // Velocity at the boundary
+              BoutReal vi_b = 0.5*(vi_next(reg->x, reg->y+reg->dir, reg->z) +
+                                   vi(reg->x, reg->y, reg->z));
+              
+              nvi_next(reg->x, reg->y+reg->dir, reg->z) = 
+                2.*n_b*vi_b - nvi(reg->x, reg->y, reg->z);
+              
+              momflux_next(reg->x, reg->y+reg->dir, reg->z) = 
+                2.*n_b*vi_b*vi_b - momflux(reg->x, reg->y, reg->z);
+            }
+          }
+          */
+          ddt(n) -= Div_par_U1(ntot, -jtot/ntot_lim);
+        }
+        
+      } else {
+        ddt(n) -= Div_par_U1(ntot, vi - jtot/ntot_lim);
+      }
+      
       if (drifts) {
         ddt(n) +=
           poisson(ntot, phitot) // ExB advection
           + curvature(ntot * Te)  // Electron curvature drift
           ;
-      }
-      
-      if (vacuum_diffuse > 0.0) {
-        // Add perpendicular diffusion at small density
-        
-        for (auto &i : n.region(RGN_NOBNDRY)) {
-          BoutReal nc = ntot[i];
-          if ( nc < 1e-6 ) {
-            // x+1/2
-            auto ind = i.xp();
-            BoutReal diff = vacuum_diffuse*(nc - ntot[ind]);
-            ddt(n)[ind] += diff;
-            ddt(n)[i] -= diff;
-            
-            ind = i.xm();
-            diff = vacuum_diffuse*(nc - ntot[ind]);
-            ddt(n)[ind] += diff;
-            ddt(n)[i] -= diff;
-            
-            ind = i.zp();
-            diff = vacuum_diffuse*(nc - ntot[ind]);
-            ddt(n)[ind] += diff;
-            ddt(n)[i] -= diff;
-            
-            ind = i.zm();
-            diff = vacuum_diffuse*(nc - ntot[ind]);
-            ddt(n)[ind] += diff;
-            ddt(n)[i] -= diff;
-          }
-        }
       }
     }
     
@@ -428,16 +460,22 @@ protected:
       TRACE("ddt(nvi)");
       
       ddt(nvi) =
-        - Div_par_U1(nvi, vi) // Parallel advection
-        //- Grad_parP(ptot)    // pressure gradient
-        - Grad_parP((Te + Ti) * (n + N0)) // Pressure gradient, no flooring at 0
-
-        + diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
-        + viscosity*Div_a_Laplace_xz(n,vi)     // Perpendicular viscosity
-        + viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
-        - vacuum_damp*vac_mask*nvi // Damping in vacuum region
+        - (Te + Ti) * Grad_par(n)
+        //- Grad_parP((Te + Ti) * (n + N0)) // Pressure gradient, no flooring at 0
+        
+        //+ diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
+        //+ viscosity*Div_a_Laplace_xz(n,vi)     // Perpendicular viscosity
+        //+ viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
+        + viscosity_par * Grad2_par2(nvi)
         ;
-
+      
+      // Parallel advection
+      if (nvi_div_integrate) {
+        ddt(nvi) -=  Div_par_integrate(momflux);
+      } else {
+        ddt(nvi) -= Div_par_U1(nvi, vi);
+      }
+      
       if (drifts) {
         ddt(nvi) +=
           poisson(nvi, phitot) // ExB advection
@@ -645,6 +683,41 @@ protected:
     }
     return result;
   }
+
+  /// Parallel divergence, using integration over projected cells
+  Field3D Div_par_integrate(const Field3D &f) {
+    Field3D f_B = f / Bxyz;
+    
+    f_B.splitYupYdown();
+    mesh->getParallelTransform().integrateYUpDown(f_B);
+
+    // integrateYUpDown replaces all yup/down points, so the boundary conditions
+    // now need to be applied. If Bxyz has neumann parallel boundary conditions
+    // then the boundary condition is simpler since f = 0 gives f_B=0 boundary condition.
+
+    /// Loop over the mesh boundary regions
+    for (const auto &reg : mesh->getBoundariesPar()) {
+      Field3D &f_B_next = f_B.ynext(reg->dir);
+      const Field3D &f_next = f.ynext(reg->dir);
+      const Field3D &B_next = Bxyz.ynext(reg->dir);
+      
+      for (reg->first(); !reg->isDone(); reg->next()) {
+        f_B_next(reg->x, reg->y+reg->dir, reg->z) =
+          f_next(reg->x, reg->y+reg->dir, reg->z) / B_next(reg->x, reg->y+reg->dir, reg->z);
+      }
+    }
+    
+    Field3D result;
+    result.allocate();
+    
+    Coordinates *coord = mesh->coordinates();
+    
+    for(auto i : result.region(RGN_NOBNDRY)) {
+      result[i] = Bxyz[i] * (f_B.yup()[i.yp()] - f_B.ydown()[i.ym()]) * 0.5 * inv_dy[i];
+    }
+    
+    return result;
+  }
   
 private:
   // Evolving variables
@@ -690,16 +763,13 @@ private:
   
   Field2D inv_dy; // 1 / (sqrt(g_22) * dy) for parallel gradients
 
-  Field3D vac_mask; // 1 in vacuum, 0 in plasma
-  BoutReal vacuum_density, vacuum_trans; // Determines the transition from 0 to 1
-  BoutReal vacuum_mult; // Multiply dissipation in vacuum
-  BoutReal vacuum_damp; // Damping in vacuum region
-  BoutReal vacuum_diffuse; // Density diffusion at low density
-
   bool drifts;          // Include currents and electric fields?
   bool electromagnetic; // Include electromagnetic effects?
   bool FiniteElMass;    // Finite electron mass?
-  bool boussinesq;      // Use the Boussinesq approximation?
+
+  bool n_div_integrate; // Density parallel flux method
+  bool nvi_div_integrate; // Parallel momentum flux method
+ 
 };
 
 ///////////////////////////////////////////////////////////
