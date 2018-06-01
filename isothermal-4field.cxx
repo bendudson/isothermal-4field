@@ -64,6 +64,7 @@ protected:
     Omega_ci = SI::qe*Bnorm / mi;
     Cs = sqrt(SI::qe * Tnorm / mi);
     rho_s = Cs / Omega_ci;
+    
     beta = SI::mu0 * SI::qe * Nnorm * Tnorm / SQ(Bnorm);
 
     output.write("\tOmega_ci = %e, Cs = %e, rho_s = %e, beta = %e\n", Omega_ci, Cs, rho_s, beta);
@@ -157,7 +158,7 @@ protected:
     coord->dz /= rho_s;
     
     R = sqrt(coord->g_22) / rho_s;
-
+    
     inv_dy = 1. / (sqrt(coord->g_22) * coord->dy);
     
     /////////////////////////////////////////////////////////////////////
@@ -402,8 +403,7 @@ protected:
     {
       TRACE("ddt(n)");
       
-      ddt(n) = 0.0
-        //diffusion*Div_a_Laplace_xz(n)
+      ddt(n) = diffusion*Div_a_Laplace_xz(n)
         ;
 
       if (n_div_integrate) {
@@ -463,10 +463,9 @@ protected:
         - (Te + Ti) * Grad_par(n)
         //- Grad_parP((Te + Ti) * (n + N0)) // Pressure gradient, no flooring at 0
         
-        //+ diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
-        //+ viscosity*Div_a_Laplace_xz(n,vi)     // Perpendicular viscosity
-        //+ viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
-        + viscosity_par * Grad2_par2(nvi)
+        + diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
+        + viscosity*Div_a_Laplace_xz(n,vi)     // Perpendicular viscosity
+        + viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
         ;
       
       // Parallel advection

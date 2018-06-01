@@ -4,7 +4,10 @@
 nout = 100
 timestep = 100
 
-grid = "tokamak.fci.nc"
+grid = "tokamak-ny1.fci.nc"
+
+myg = 1
+nxpe = 1
 
 [mesh]
 
@@ -12,8 +15,8 @@ paralleltransform = fci
 
 [solver]  # Time integration solver
 
-#atol = 1e-6
-#rtol = 1e-3
+atol = 1e-10
+rtol = 1e-8
 
 [phisolver]
 type=cyclic
@@ -40,7 +43,7 @@ all_terms = false
 [model]
 
 viscosity = 1e-2     # Kinematic viscosity in m^2/s
-viscosity_par = 1e2  # Parallel kinematic viscosity in m^2/s
+viscosity_par = 1e5  # Parallel kinematic viscosity in m^2/s
 resistivity = 5e-6
 
 Ti = 100.
@@ -50,12 +53,8 @@ drifts = false         # Include currents and electric fields?
 electromagnetic = true
 FiniteElMass = true
 
-vacuum_density = 1e-04
-vacuum_trans = 5e-06
-
-vacuum_mult = 0.0
-vacuum_damp = 0.0
-vacuum_diffuse = -1
+nvi_div_integrate = false
+n_div_integrate = false
 
 [all]
 bndry_par_all = parallel_neumann
