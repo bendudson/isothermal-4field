@@ -4,9 +4,9 @@
 nout = 100
 timestep = 100
 
-grid = "tokamak.fci.nc"
+grid = "tokamak-ny1.fci.nc"
 
-mgy = 1
+myg = 1
 nxpe = 1
 
 [mesh]
@@ -15,8 +15,8 @@ paralleltransform = fci
 
 [solver]  # Time integration solver
 
-#atol = 1e-6
-#rtol = 1e-3
+atol = 1e-10
+rtol = 1e-8
 
 [phisolver]
 type=cyclic
@@ -53,8 +53,8 @@ drifts = false         # Include currents and electric fields?
 electromagnetic = true
 FiniteElMass = true
 
-n_div_integrate = true   # Density parallel flux method
-nvi_div_integrate = true # Parallel momentum flux method
+nvi_div_integrate = true
+n_div_integrate = true
 
 [all]
 bndry_par_all = parallel_neumann
@@ -67,9 +67,13 @@ function = 1e-6 + 1e-3 * exp(-((x-0.7)/0.1)^2 - ((zl-0.3)/0.1)^2)
 
 bndry_par_all = parallel_neumann
 
-[vi]
+[nvi]
 
 bndry_par_all = parallel_dirichlet
+
+[vi]
+
+bndry_par_all = parallel_dirichlet_midpoint
 
 #bndry_par_yup = parallel_dirichlet(1.0)
 #bndry_par_ydown = parallel_dirichlet(-1.0)

@@ -274,8 +274,8 @@ protected:
     
     // Apply boundary conditions to v
     vi.splitYupYdown();
-    vi.yup().allocate();
-    vi.ydown().allocate();
+    vi.yup() = nvi.yup() / ntot_lim;
+    vi.ydown() = nvi.ydown() / ntot_lim;
     vi.applyParallelBoundary();
 
     // Ensure that boundary conditions are consistent
@@ -296,6 +296,9 @@ protected:
         // Density at the boundary
         BoutReal n_b = 0.5*(n_next(reg->x, reg->y+reg->dir, reg->z) +
                             n(reg->x, reg->y, reg->z));
+        if (n_b < 0.0) {
+          n_b = 0.0;
+        }
         // Velocity at the boundary
         BoutReal vi_b = 0.5*(vi_next(reg->x, reg->y+reg->dir, reg->z) +
                              vi(reg->x, reg->y, reg->z));
@@ -464,8 +467,9 @@ protected:
         //- Grad_parP((Te + Ti) * (n + N0)) // Pressure gradient, no flooring at 0
         
         + diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
-        + viscosity*Div_a_Laplace_xz(n,vi)     // Perpendicular viscosity
+        + viscosity*Div_a_Laplace_xz(ntot,vi)     // Perpendicular viscosity
         + viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
+        //+ viscosity_par * Grad2_par2(nvi)
         ;
       
       // Parallel advection
@@ -545,16 +549,15 @@ protected:
       yup = f.yup();
       ydown = f.ydown();
     }
-
+    
     if (!D.hasYupYdown()) {
       // Communicate to get yup and ydown fields
-      Field3D fcom = f;
-      mesh->communicate(fcom);
-      fcom.applyParallelBoundary("parallel_neumann");
-      //fcom.applyParallelBoundary("parallel_dirichlet_midpoint");
+      Field3D Dcom = D;
+      mesh->communicate(Dcom);
+      Dcom.applyParallelBoundary("parallel_neumann");
       
-      Dup = fcom.yup();
-      Ddown = fcom.ydown();
+      Dup = Dcom.yup();
+      Ddown = Dcom.ydown();
     } else {
       Dup = D.yup();
       Ddown = D.ydown();
@@ -580,6 +583,8 @@ protected:
       BoutReal Dm = 0.5*(Ddown[ym] + D[i]);
       
       result[i] = ( (yup[yp]*Dp/Bp) - f[i]*(Dp/Bp + Dm/Bm) + (ydown[ym]*Dm/Bm)) * SQ(inv_dy[i]) * Bxyz[i];
+
+      ASSERT3(finite(result[i]));
     }
     
     return result;
