@@ -65,7 +65,7 @@ bndry_all = neumann
 [n]
 
 zl = z / (2*pi)
-function = model:background + 1e-3 * exp(-((x-0.6)/0.05)^2 - ((zl-0.5)/0.05)^2)
+function = model:background + 1e-3 * exp(-((x-0.6)/0.03)^2 - ((zl-0.5)/0.03)^2)
 
 [logn]
 

@@ -254,9 +254,13 @@ protected:
     } else {
       phi = 0.0;
     }
+
+    // This is used so that nvi and jpar
+    // go to zero when density reaches the "background" level
+    Field3D n_offset = floor(n - background, 0.0);
     
     // Parallel flow
-    nvi = n * vi;
+    nvi = n_offset * vi;
     nvi.splitYupYdown();
     for (const auto &reg : mesh->getBoundariesPar()) {
       Field3D &nvi_next = nvi.ynext(reg->dir);
@@ -291,13 +295,13 @@ protected:
         } else {
           // Electromagnetic + finite electron mass
           Apar = psiSolver->solve(Ajpar + nvi/mi_me, 0.0);
-          Jpar = mi_me*n*(Ajpar - Apar) + nvi;
+          Jpar = mi_me*n_offset*(Ajpar - Apar) + nvi;
         }
       } else {
         // Electrostatic
         if (FiniteElMass) {
           // Ajpar = -me_mi v_||e
-          Jpar = n * Ajpar*mi_me + nvi;
+          Jpar = n_offset * Ajpar*mi_me + nvi;
         } else {
           // Electrostatic + zero electron mass
           Jpar = Grad_parP(Te*n - phi) / resistivity;
@@ -345,12 +349,17 @@ protected:
           + viscosity*Div_a_Laplace_xz(omega)  // Viscosity
           ;
       }
-    
+
+      // Damp vorticity in low density regions
+      // This is mainly for regions close to walls
+      // where spurious vorticity can grow
+      ddt(omega) -= SQ(background / n) * omega;
+      
       // Perturbed vector potential
       if (electromagnetic || FiniteElMass) {
         TRACE("ddt(Ajpar)");
         
-        Field3D Jpar2 = Div_a_Laplace_xz(Jpar);
+        //Field3D Jpar2 = Div_a_Laplace_xz(Jpar);
         
         ddt(Ajpar) = 
           Grad_parP(Te*n - phi)
