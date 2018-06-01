@@ -32,13 +32,9 @@ public:
 const Field3D Div_a_Laplace_xz(const Field3D &a, const Field3D &f);
 const Field3D Div_a_Laplace_xz(const Field3D &f);
 
-//Field3D a,b,c,d;
-
-class MergingFlux : public PhysicsModel {
+class Isothermal4Field : public PhysicsModel {
 protected:
   int init(bool restarting) {
-
-    // SAVE_REPEAT4(a,b,c,d);
     
     // Add custom boundary condition
     BoundaryFactory::getInstance()->add(new ParDirichletMidpoint(), "parallel_dirichlet_midpoint");
@@ -175,10 +171,7 @@ protected:
     
     P0 = 0.0;
     
-    // Calculate density from the pressure, assuming isothermal
-    N0 = P0 / (Te + Ti);
-    
-    SAVE_ONCE2(J0, N0);
+    SAVE_ONCE(J0);
     
     /////////////////////////////////////////////////////////////////////
     //
@@ -188,10 +181,12 @@ protected:
     OPTION(opt, electromagnetic, true);
     OPTION(opt, FiniteElMass, false);
 
-    OPTION(opt, n_div_integrate, false);
-    OPTION(opt, nvi_div_integrate, false);
+    OPTION(opt, background, 1e-6);
+    log_background = log(background);
     
-    SOLVE_FOR2(n, nvi);
+    SOLVE_FOR2(logn, vi);
+
+    SAVE_REPEAT(n);
     
     if (drifts) {
       SOLVE_FOR(omega);
@@ -218,10 +213,8 @@ protected:
 
       SAVE_REPEAT(Apar);
     }
-
-    ntot.setBoundary("ntot");
+    
     jtot.setBoundary("jtot");
-    vi.setBoundary("vi");
     
     return 0;
   }
@@ -229,16 +222,24 @@ protected:
   int rhs(BoutReal t) {
 
     if (drifts) {
-      mesh->communicate(Apar, omega, n, nvi);
+      mesh->communicate(Apar, omega, logn, nvi);
       Apar.applyParallelBoundary();
       omega.applyParallelBoundary();
       
     } else {
-      mesh->communicate(n, nvi);
+      mesh->communicate(logn, vi);
     }
     
-    n.applyParallelBoundary();
-    // Note: Boundary applied to vi rather than nvi
+    // Apply boundary condition to log(n)
+    // rather than n to prevent negative densities
+    logn.applyParallelBoundary();
+    vi.applyParallelBoundary();
+ 
+    n = exp(logn);
+    n.splitYupYdown();
+    n.yup() = exp(logn.yup());
+    n.ydown() = exp(logn.ydown());
+    
     
     // Apply Dirichlet boundary conditions in z
     for(int i=0;i<mesh->LocalNx;i++) {
@@ -262,56 +263,28 @@ protected:
       phi = 0.0;
     }
     
-    ntot = floor(n + N0, 0.0);    // Total density
-      
-    Field3D ntot_lim = floor(ntot, 1e-4);
-    
-    Field3D phitot = phi - Ti * N0; // Total electric potential, assuming omega0 = 0
-    
     // Parallel flow
-    vi = nvi / ntot_lim;
-    Field3D momflux = nvi * vi; // Momentum flux
-    
-    // Apply boundary conditions to v
-    vi.splitYupYdown();
-    vi.yup() = nvi.yup() / ntot_lim;
-    vi.ydown() = nvi.ydown() / ntot_lim;
-    vi.applyParallelBoundary();
-
-    // Ensure that boundary conditions are consistent
-    // between v, nv and momentum flux
-    
-    momflux.splitYupYdown();
+    nvi = n * vi;
+    nvi.splitYupYdown();
     for (const auto &reg : mesh->getBoundariesPar()) {
-      // Using the values of density and velocity on the boundary
-      const Field3D &n_next = n.ynext(reg->dir);
-      const Field3D &vi_next = vi.ynext(reg->dir);
-
-      // Set the momentum and momentum flux
       Field3D &nvi_next = nvi.ynext(reg->dir);
-      Field3D &momflux_next = momflux.ynext(reg->dir);
-      momflux_next.allocate();
-        
+      nvi_next.allocate();
+      
+      const Field3D &logn_next = logn.ynext(reg->dir);
+      const Field3D &vi_next = vi.ynext(reg->dir);
+      
       for (reg->first(); !reg->isDone(); reg->next()) {
-        // Density at the boundary
-        BoutReal n_b = 0.5*(n_next(reg->x, reg->y+reg->dir, reg->z) +
-                            n(reg->x, reg->y, reg->z));
-        if (n_b < 0.0) {
-          n_b = 0.0;
-        }
-        // Velocity at the boundary
+        BoutReal n_b = exp(0.5*(logn_next(reg->x, reg->y+reg->dir, reg->z) +
+                                logn(reg->x, reg->y, reg->z)));
         BoutReal vi_b = 0.5*(vi_next(reg->x, reg->y+reg->dir, reg->z) +
                              vi(reg->x, reg->y, reg->z));
         
         nvi_next(reg->x, reg->y+reg->dir, reg->z) = 
           2.*n_b*vi_b - nvi(reg->x, reg->y, reg->z);
-
-        momflux_next(reg->x, reg->y+reg->dir, reg->z) = 
-          2.*n_b*vi_b*vi_b - momflux(reg->x, reg->y, reg->z);
       }
     }
     
-    Field3D ptot = (Te + Ti) * ntot; // Total pressure
+    Field3D ptot = (Te + Ti) * n; // Total pressure
     
     ////////////////////////////////////
     // Ohm's law
@@ -326,16 +299,16 @@ protected:
         } else {
           // Electromagnetic + finite electron mass
           Apar = psiSolver->solve(Ajpar + nvi/mi_me, 0.0);
-          Jpar = mi_me*ntot*(Ajpar - Apar) + nvi;
+          Jpar = mi_me*n*(Ajpar - Apar) + nvi;
         }
       } else {
         // Electrostatic
         if (FiniteElMass) {
           // Ajpar = -me_mi v_||e
-          Jpar = ntot * Ajpar*mi_me + nvi;
+          Jpar = n * Ajpar*mi_me + nvi;
         } else {
           // Electrostatic + zero electron mass
-          Jpar = Grad_parP(Te*ntot - phitot) / resistivity;
+          Jpar = Grad_parP(Te*n - phi) / resistivity;
         }
       }
       mesh->communicate(Jpar);
@@ -348,8 +321,6 @@ protected:
       }
     } else {
       Jpar = Apar = Ajpar = 0.0;
-
-      phitot = 0.0;
     }
     
     // Poloidal flux
@@ -357,12 +328,10 @@ protected:
 
     jtot = Jpar + J0; // Total parallel current
     
-    ntot.applyBoundary();
     jtot.applyBoundary();
 
     //jtot *= Bxyz; // Note:Applying boundary on flux (j/B)
-    mesh->communicate(ntot, jtot);
-    ntot.applyParallelBoundary();
+    mesh->communicate(jtot);
     
     jtot.applyParallelBoundary(0.0);
     // jtot /= Bxyz;
@@ -380,7 +349,7 @@ protected:
       {
         TRACE("ddt(omega)");
         ddt(omega) = 
-          poisson(omega, phitot)   // ExB advection
+          poisson(omega, phi)   // ExB advection
           - Div_parP2(omega, vi)   // Parallel advection
           + Div_parP(jtot)          // Parallel current
           + curvature(ptot)         // Diamagnetic current (ballooning drive)
@@ -395,7 +364,7 @@ protected:
         Field3D Jpar2 = Div_a_Laplace_xz(Jpar);
         
         ddt(Ajpar) = 
-          Grad_parP(Te*ntot - phitot)
+          Grad_parP(Te*n - phi)
           - resistivity * Jpar // Resistivity
           + hyperresist * Jpar2  // Hyper-resistivity
           ;
@@ -406,21 +375,20 @@ protected:
     {
       TRACE("ddt(n)");
       
-      ddt(n) = diffusion*Div_a_Laplace_xz(n)
+      ddt(n) =
+        - Div_par_integrate(nvi)
+        + diffusion*Div_a_Laplace_xz(n)
         ;
 
-      if (n_div_integrate) {
-        ddt(n) -= Div_par_integrate(nvi);
-        
-        if (drifts) {
-          /*
-          Field3D jflux = jtot/ntot_lim;
-
+      if (drifts) {
+        /*
+          Field3D jflux = jtot/n;
+          
           jflux.splitYupYdown();
           for (const auto &reg : mesh->getBoundariesPar()) {
-            // Using the values of density and velocity on the boundary
-            const Field3D &ntot_next = ntot_lim.ynext(reg->dir);
-            const Field3D &jtot_next = jtot.ynext(reg->dir);
+          // Using the values of density and velocity on the boundary
+          const Field3D &ntot_next = n.ynext(reg->dir);
+          const Field3D &jtot_next = jtot.ynext(reg->dir);
             
             // Set the momentum and momentum flux
             Field3D &nvi_next = nvi.ynext(reg->dir);
@@ -442,50 +410,45 @@ protected:
                 2.*n_b*vi_b*vi_b - momflux(reg->x, reg->y, reg->z);
             }
           }
-          */
-          ddt(n) -= Div_par_U1(ntot, -jtot/ntot_lim);
-        }
-        
-      } else {
-        ddt(n) -= Div_par_U1(ntot, vi - jtot/ntot_lim);
-      }
-      
-      if (drifts) {
+        */
         ddt(n) +=
-          poisson(ntot, phitot) // ExB advection
-          + curvature(ntot * Te)  // Electron curvature drift
+          - Div_par_U1(n, -jtot/n)
+          + poisson(n, phi) // ExB advection
+          + curvature(n * Te)  // Electron curvature drift
           ;
+      }
+
+      ddt(logn) = ddt(n) / n;
+    }
+    
+    // Apply a soft floor to the density
+    // Hard floors (setting ddt = 0) can slow convergence of solver
+    for (auto i : logn.region(RGN_NOBNDRY)) {
+      if (ddt(logn)[i] < 0.0) {
+        ddt(logn)[i] *= (1. - exp(log_background - logn[i]));
       }
     }
     
-    // Parallel momentum
+    // Parallel velocity
     {
-      TRACE("ddt(nvi)");
+      TRACE("ddt(vi)");
       
-      ddt(nvi) =
-        - (Te + Ti) * Grad_par(n)
-        //- Grad_parP((Te + Ti) * (n + N0)) // Pressure gradient, no flooring at 0
-        
-        + diffusion*Div_a_Laplace_xz(vi, n)    // Perpendicular diffusion
-        + viscosity*Div_a_Laplace_xz(ntot,vi)     // Perpendicular viscosity
-        + viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
-        //+ viscosity_par * Grad2_par2(nvi)
+      ddt(vi) =
+        - vi * Grad_par(vi)
+        - (Te + Ti) * Grad_par(logn)
+        //+ viscosity*Div_a_Laplace_xz(ntot,vi)     // Perpendicular viscosity
+        //+ viscosity_par * Diffusion_parP(ntot, vi) // Parallel viscosity
+        + viscosity_par * Grad2_par2(vi)
         ;
-      
-      // Parallel advection
-      if (nvi_div_integrate) {
-        ddt(nvi) -=  Div_par_integrate(momflux);
-      } else {
-        ddt(nvi) -= Div_par_U1(nvi, vi);
-      }
       
       if (drifts) {
         ddt(nvi) +=
-          poisson(nvi, phitot) // ExB advection
+          poisson(nvi, phi) // ExB advection
           - curvature(nvi * Ti)  // Ion curvature drift
           ;
       }
     }
+
     
     return 0;
   }
@@ -725,21 +688,20 @@ protected:
   
 private:
   // Evolving variables
-  Field3D Ajpar, omega, n, nvi;  // Electromagnetic potential, vorticity, density perturbation, parallel momentum
-
+  Field3D Ajpar, omega, logn, vi;  // Electromagnetic potential, vorticity, log density, parallel velocity
+  Field3D n; // Density
+  
   Field3D Apar;
   Field3D Jpar;   // Perturbed parallel current density
   Field3D phi;    // Electrostatic potential
   Field3D psi;    // Poloidal flux
-  Field3D vi;     // Parallel flow velocity
+  Field3D nvi;    // Parallel momentum (particle flux)
 
   Field3D jtot; // Total current
-  Field3D ntot; // Total density
   
   Field3D Bxyz; // 3D Magnetic field [T]
   Field2D R;    // Major radius  [Normalised]
   Field3D J0;   // Equilibrium parallel current [Normalised]
-  Field3D N0;   // Equilibrium density [Normalised]
   
   Field3D bracket_factor; // sqrt(g_yy) / (JB) factor appearing in ExB advection
   Field3D logB; // Log(Bxyz) used in curvature
@@ -771,9 +733,8 @@ private:
   bool electromagnetic; // Include electromagnetic effects?
   bool FiniteElMass;    // Finite electron mass?
 
-  bool n_div_integrate; // Density parallel flux method
-  bool nvi_div_integrate; // Parallel momentum flux method
- 
+  BoutReal background; ///< background density floor
+  BoutReal log_background; // Log(background)
 };
 
 ///////////////////////////////////////////////////////////
@@ -818,7 +779,7 @@ void ParDirichletMidpoint::apply(Field3D &f, BoutReal t) {
   }
 }
 
-BOUTMAIN(MergingFlux);
+BOUTMAIN(Isothermal4Field);
 
 // Div ( a Laplace_xz(f) )  -- Vorticity
 const Field3D Div_a_Laplace_xz(const Field3D &a, const Field3D &f) {

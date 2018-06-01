@@ -2,7 +2,7 @@
 # 
 
 nout = 100
-timestep = 100
+timestep = 10
 
 grid = "tokamak-ny1.fci.nc"
 
@@ -12,6 +12,9 @@ nxpe = 1
 [mesh]
 
 paralleltransform = fci
+
+[fci]
+z_periodic = false
 
 [solver]  # Time integration solver
 
@@ -53,8 +56,7 @@ drifts = false         # Include currents and electric fields?
 electromagnetic = true
 FiniteElMass = true
 
-nvi_div_integrate = false
-n_div_integrate = false
+background = 1e-6
 
 [all]
 bndry_par_all = parallel_neumann
@@ -63,13 +65,14 @@ bndry_all = neumann
 [n]
 
 zl = z / (2*pi)
-function = 1e-6 + 1e-3 * exp(-((x-0.7)/0.1)^2 - ((zl-0.3)/0.1)^2)
+function = model:background + 1e-3 * exp(-((x-0.7)/0.1)^2 - ((zl-0.3)/0.1)^2)
 
-bndry_par_all = parallel_neumann
+[logn]
 
-[nvi]
+function = log(n:function)
 
-bndry_par_all = parallel_dirichlet
+bndry_par_yup = parallel_neumann
+bndry_par_ydown = parallel_neumann
 
 [vi]
 
@@ -77,9 +80,6 @@ bndry_par_all = parallel_dirichlet
 
 #bndry_par_yup = parallel_dirichlet(1.0)
 #bndry_par_ydown = parallel_dirichlet(-1.0)
-
-[ntot]
-bndry_par_all = parallel_neumann
 
 [jtot]
 bndry_par_all = parallel_dirichlet_midpoint
