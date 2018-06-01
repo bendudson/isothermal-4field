@@ -1,0 +1,85 @@
+#
+# 
+
+nout = 100
+timestep = 1
+
+grid = "tokamak-ny1.fci.nc"
+
+myg = 1
+nxpe = 1
+
+[mesh]
+
+paralleltransform = fci
+
+[fci]
+z_periodic = false
+
+[solver]  # Time integration solver
+
+atol = 1e-10
+rtol = 1e-8
+
+[phisolver]
+type=cyclic
+dst = true
+
+all_terms = false
+
+inner_boundary_flags = 0
+outer_boundary_flags = 0
+
+[psisolver]
+type=cyclic
+dst = true
+
+all_terms = false
+
+inner_boundary_flags = 0
+outer_boundary_flags = 0
+
+[laplace]
+
+all_terms = false
+
+[model]
+
+viscosity = 1e-2     # Kinematic viscosity in m^2/s
+viscosity_par = 1e5  # Parallel kinematic viscosity in m^2/s
+resistivity = 5e-6
+
+Ti = 100.
+Te = 100.
+
+drifts = true         # Include currents and electric fields?
+electromagnetic = true
+FiniteElMass = true
+
+background = 1e-6
+
+[all]
+bndry_par_all = parallel_neumann
+bndry_all = neumann
+
+[n]
+
+zl = z / (2*pi)
+function = model:background + 1e-3 * exp(-((x-0.6)/0.05)^2 - ((zl-0.5)/0.05)^2)
+
+[logn]
+
+function = log(n:function)
+
+bndry_par_yup = parallel_neumann
+bndry_par_ydown = parallel_neumann
+
+[vi]
+
+#bndry_par_all = parallel_dirichlet
+
+bndry_par_yup = parallel_dirichlet(1.0)
+bndry_par_ydown = parallel_dirichlet(-1.0)
+
+[jtot]
+bndry_par_all = parallel_dirichlet_midpoint

@@ -168,10 +168,8 @@ protected:
     Field3D P0;
     mesh->get(P0, "pressure"); // In Pascals
     P0 /= SI::qe*Tnorm*Nnorm;
-    
-    P0 = 0.0;
-    
-    SAVE_ONCE(J0);
+
+    // Add P0/(Te+Ti) to density
     
     /////////////////////////////////////////////////////////////////////
     //
@@ -194,27 +192,22 @@ protected:
         SOLVE_FOR(Ajpar);
       }
       SAVE_REPEAT3(phi, Jpar, psi);
-    } else {
-      omega = 0.0;
-    }
-    
-    /////////////////////////////////////////////////////////////////////
-    // Laplacian inversions
-    
-    // Create Laplacian inversion objects for potentials
-    phiSolver = Laplacian::create(Options::getRoot()->getSection("phisolver"));
-    phi = psi = Apar = Jpar = 0.0; // Initial value
 
-    if (electromagnetic && FiniteElMass) {
-      // Need to solve a Helmholtz problem to get Apar
-      psiSolver = Laplacian::create(Options::getRoot()->getSection("psisolver"));
-      psiSolver->setCoefA(1.0); // density n
-      psiSolver->setCoefD(-1.0/(beta * mi_me));
-
-      SAVE_REPEAT(Apar);
+      // Create Laplacian inversion objects for potentials
+      phiSolver = Laplacian::create(Options::getRoot()->getSection("phisolver"));
+      phi = psi = Apar = Jpar = 0.0; // Initial value
+      
+      if (electromagnetic && FiniteElMass) {
+        // Need to solve a Helmholtz problem to get Apar
+        psiSolver = Laplacian::create(Options::getRoot()->getSection("psisolver"));
+        psiSolver->setCoefA(1.0); // density n
+        psiSolver->setCoefD(-1.0/(beta * mi_me));
+        
+        SAVE_REPEAT(Apar);
+      }
+      
+      jtot.setBoundary("jtot");
     }
-    
-    jtot.setBoundary("jtot");
     
     return 0;
   }
@@ -222,7 +215,7 @@ protected:
   int rhs(BoutReal t) {
 
     if (drifts) {
-      mesh->communicate(Apar, omega, logn, nvi);
+      mesh->communicate(Apar, omega, logn, vi);
       Apar.applyParallelBoundary();
       omega.applyParallelBoundary();
       
@@ -239,8 +232,7 @@ protected:
     n.splitYupYdown();
     n.yup() = exp(logn.yup());
     n.ydown() = exp(logn.ydown());
-    
-    
+        
     // Apply Dirichlet boundary conditions in z
     for(int i=0;i<mesh->LocalNx;i++) {
       for(int j=0;j<mesh->LocalNy;j++) {
@@ -288,7 +280,7 @@ protected:
     
     ////////////////////////////////////
     // Ohm's law
-
+    
     if (drifts) {
       if (electromagnetic) {
         if (!FiniteElMass) {
@@ -320,7 +312,7 @@ protected:
         }
       }
     } else {
-      Jpar = Apar = Ajpar = 0.0;
+      jtot = Jpar = Apar = Ajpar = 0.0;
     }
     
     // Poloidal flux
@@ -334,9 +326,6 @@ protected:
     mesh->communicate(jtot);
     
     jtot.applyParallelBoundary(0.0);
-    // jtot /= Bxyz;
-    // jtot.yup() /= Bxyz.yup();
-    // jtot.ydown() /= Bxyz.ydown();
 
     if (!drifts) {
       jtot = 0.0;
@@ -366,7 +355,7 @@ protected:
         ddt(Ajpar) = 
           Grad_parP(Te*n - phi)
           - resistivity * Jpar // Resistivity
-          + hyperresist * Jpar2  // Hyper-resistivity
+          //+ hyperresist * Jpar2  // Hyper-resistivity
           ;
       }
     }
@@ -381,36 +370,6 @@ protected:
         ;
 
       if (drifts) {
-        /*
-          Field3D jflux = jtot/n;
-          
-          jflux.splitYupYdown();
-          for (const auto &reg : mesh->getBoundariesPar()) {
-          // Using the values of density and velocity on the boundary
-          const Field3D &ntot_next = n.ynext(reg->dir);
-          const Field3D &jtot_next = jtot.ynext(reg->dir);
-            
-            // Set the momentum and momentum flux
-            Field3D &nvi_next = nvi.ynext(reg->dir);
-            Field3D &momflux_next = momflux.ynext(reg->dir);
-            momflux_next.allocate();
-            
-            for (reg->first(); !reg->isDone(); reg->next()) {
-              // Density at the boundary
-              BoutReal n_b = 0.5*(n_next(reg->x, reg->y+reg->dir, reg->z) +
-                                  n(reg->x, reg->y, reg->z));
-              // Velocity at the boundary
-              BoutReal vi_b = 0.5*(vi_next(reg->x, reg->y+reg->dir, reg->z) +
-                                   vi(reg->x, reg->y, reg->z));
-              
-              nvi_next(reg->x, reg->y+reg->dir, reg->z) = 
-                2.*n_b*vi_b - nvi(reg->x, reg->y, reg->z);
-              
-              momflux_next(reg->x, reg->y+reg->dir, reg->z) = 
-                2.*n_b*vi_b*vi_b - momflux(reg->x, reg->y, reg->z);
-            }
-          }
-        */
         ddt(n) +=
           - Div_par_U1(n, -jtot/n)
           + poisson(n, phi) // ExB advection
@@ -442,9 +401,9 @@ protected:
         ;
       
       if (drifts) {
-        ddt(nvi) +=
-          poisson(nvi, phi) // ExB advection
-          - curvature(nvi * Ti)  // Ion curvature drift
+        ddt(vi) +=
+          poisson(vi, phi) // ExB advection
+          - Ti*curvature(vi)  // Ion curvature drift
           ;
       }
     }
