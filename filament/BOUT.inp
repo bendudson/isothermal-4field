@@ -2,18 +2,24 @@
 # 
 
 nout = 100
-timestep = 100
+timestep = 1
 
-grid = "tokamak.fci.nc"
+grid = "tokamak-ny10.fci.nc"
+
+myg = 1
+nxpe = 1
 
 [mesh]
 
 paralleltransform = fci
 
+[fci]
+z_periodic = false
+
 [solver]  # Time integration solver
 
-#atol = 1e-6
-#rtol = 1e-3
+atol = 1e-10
+rtol = 1e-8
 
 [phisolver]
 type=cyclic
@@ -40,21 +46,17 @@ all_terms = false
 [model]
 
 viscosity = 1e-2     # Kinematic viscosity in m^2/s
-viscosity_par = 1e2  # Parallel kinematic viscosity in m^2/s
+viscosity_par = 1e5  # Parallel kinematic viscosity in m^2/s
 resistivity = 5e-6
 
 Ti = 100.
 Te = 100.
 
-drifts = false         # Include currents and electric fields?
+drifts = true         # Include currents and electric fields?
 electromagnetic = true
 FiniteElMass = true
 
-vacuum_density = 1e-04
-vacuum_trans = 5e-06
-
-vacuum_damp = 10
-vacuum_diffuse = -1
+background = 1e-6
 
 [all]
 bndry_par_all = parallel_neumann
@@ -62,22 +64,23 @@ bndry_all = neumann
 
 [n]
 
-scale = 1e-3
 zl = z / (2*pi)
-function = exp(-((x-0.7)/0.02)^2 - ((zl-0.5)/0.02)^2)*sin(y)^2
+yl = y / (2*pi)
+function = model:background + 1e-3 * exp(-((x-0.6)/0.03)^2 - ((zl-0.5)/0.03)^2 - ((yl-0.5)/0.05)^2)
 
-bndry_par_all = parallel_neumann
+[logn]
 
-[nvi]
-bndry_par_yup = parallel_neumann #parallel_dirichlet(1.0)
-bndry_par_ydown = parallel_neumann #parallel_dirichlet(-1.0)
+function = log(n:function)
+
+bndry_par_yup = parallel_neumann
+bndry_par_ydown = parallel_neumann
 
 [vi]
+
+#bndry_par_all = parallel_dirichlet
+
 bndry_par_yup = parallel_dirichlet(1.0)
 bndry_par_ydown = parallel_dirichlet(-1.0)
-
-[ntot]
-bndry_par_all = parallel_neumann
 
 [jtot]
 bndry_par_all = parallel_dirichlet_midpoint

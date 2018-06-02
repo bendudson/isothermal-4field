@@ -2,7 +2,7 @@
 # 
 
 nout = 100
-timestep = 1
+timestep = 10
 
 grid = "tokamak-ny1.fci.nc"
 
