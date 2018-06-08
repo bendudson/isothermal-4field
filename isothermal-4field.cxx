@@ -83,6 +83,7 @@ protected:
     OPTION(opt, resistivity, 0.0);
     OPTION(opt, viscosity, 0.0);     // [m^2/s] . Normalised later
     OPTION(opt, diffusion, viscosity); // [m^2/s] . Normalised later
+    OPTION(opt, diffusion_par, -1.0);  // [m^2/s] . Normalised later
     OPTION(opt, viscosity_par, 0.0); // [m^2/s] . Normalised later
     
     BoutReal Coulomb = 6.6 - 0.5*log(Nnorm/1e20) + 1.5*log(Te*Tnorm); // Coulomb logarithm
@@ -120,6 +121,7 @@ protected:
     viscosity_par *= Bnorm / Tnorm;
     resistivity *= SI::qe*Nnorm / Bnorm;
     diffusion *= Bnorm / Tnorm;
+    diffusion_par *= Bnorm / Tnorm;
     
     output.write("\tNormalised viscosity = %e, parallel viscosity = %e, resistivity = %e\n", viscosity, viscosity_par, resistivity);
 
@@ -176,15 +178,22 @@ protected:
     // Solve for electromagnetic potential, vorticity, density and parallel momentum
 
     OPTION(opt, drifts, true); // Include drifts, electric fields?
+    OPTION(opt, sound_waves, true); // Evolve vi (sound waves)
     OPTION(opt, electromagnetic, true);
     OPTION(opt, FiniteElMass, false);
 
     OPTION(opt, background, 1e-6);
     log_background = log(background);
-    
-    SOLVE_FOR2(logn, vi);
 
-    SAVE_REPEAT(n);
+    // Evolve logarithm of density
+    SOLVE_FOR(logn);
+    SAVE_REPEAT(n); // Density calculated from logn each timestep
+
+    if (sound_waves) {
+      SOLVE_FOR(vi);
+    } else {
+      nvi = vi = 0.0;
+    }
     
     if (drifts) {
       SOLVE_FOR(omega);
@@ -232,51 +241,51 @@ protected:
     n.splitYupYdown();
     n.yup() = exp(logn.yup());
     n.ydown() = exp(logn.ydown());
-        
-    // Apply Dirichlet boundary conditions in z
-    for(int i=0;i<mesh->LocalNx;i++) {
-      for(int j=0;j<mesh->LocalNy;j++) {
-        Apar(i,j,0) = -Apar(i,j,1);
-        Apar(i,j,mesh->LocalNz-1) = -Apar(i,j,mesh->LocalNz-2);
-        
-        omega(i,j,0) = -omega(i,j,1);
-        omega(i,j,mesh->LocalNz-1) = -omega(i,j,mesh->LocalNz-2);
-      }
-    }
-
+    
     if (drifts) {
+      // Apply Dirichlet boundary conditions in z
+      for (int i = 0; i < mesh->LocalNx; i++) {
+        for (int j = 0; j < mesh->LocalNy; j++) {
+          Apar(i, j, 0) = -Apar(i, j, 1);
+          Apar(i, j, mesh->LocalNz - 1) = -Apar(i, j, mesh->LocalNz - 2);
+
+          omega(i, j, 0) = -omega(i, j, 1);
+          omega(i, j, mesh->LocalNz - 1) = -omega(i, j, mesh->LocalNz - 2);
+        }
+      }
+
       ////////////////////////////////////
       // Get phi from vorticity
       phi = phiSolver->solve(omega, 0.0);
       mesh->communicate(phi);
       
       phi -= Ti * n; // Ion diamagnetic drift
-    } else {
-      phi = 0.0;
     }
 
     // This is used so that nvi and jpar
     // go to zero when density reaches the "background" level
     Field3D n_offset = floor(n - background, 0.0);
-    
-    // Parallel flow
-    nvi = n_offset * vi;
-    nvi.splitYupYdown();
-    for (const auto &reg : mesh->getBoundariesPar()) {
-      Field3D &nvi_next = nvi.ynext(reg->dir);
-      nvi_next.allocate();
-      
-      const Field3D &logn_next = logn.ynext(reg->dir);
-      const Field3D &vi_next = vi.ynext(reg->dir);
-      
-      for (reg->first(); !reg->isDone(); reg->next()) {
-        BoutReal n_b = exp(0.5*(logn_next(reg->x, reg->y+reg->dir, reg->z) +
-                                logn(reg->x, reg->y, reg->z)));
-        BoutReal vi_b = 0.5*(vi_next(reg->x, reg->y+reg->dir, reg->z) +
-                             vi(reg->x, reg->y, reg->z));
+
+    if (sound_waves) {
+      // Parallel flow
+      nvi = n_offset * vi;
+      nvi.splitYupYdown();
+      for (const auto &reg : mesh->getBoundariesPar()) {
+        Field3D &nvi_next = nvi.ynext(reg->dir);
+        nvi_next.allocate();
         
-        nvi_next(reg->x, reg->y+reg->dir, reg->z) = 
-          2.*n_b*vi_b - nvi(reg->x, reg->y, reg->z);
+        const Field3D &logn_next = logn.ynext(reg->dir);
+        const Field3D &vi_next = vi.ynext(reg->dir);
+        
+        for (reg->first(); !reg->isDone(); reg->next()) {
+          BoutReal n_b = exp(0.5*(logn_next(reg->x, reg->y+reg->dir, reg->z) +
+                                  logn(reg->x, reg->y, reg->z)));
+          BoutReal vi_b = 0.5*(vi_next(reg->x, reg->y+reg->dir, reg->z) +
+                               vi(reg->x, reg->y, reg->z));
+          
+          nvi_next(reg->x, reg->y+reg->dir, reg->z) = 
+            2.*n_b*vi_b - nvi(reg->x, reg->y, reg->z);
+        }
       }
     }
     
@@ -369,15 +378,20 @@ protected:
       }
     }
     
-    // Perturbed density
+    // Electron density
     {
       TRACE("ddt(n)");
       
-      ddt(n) =
-        - Div_par_integrate(nvi)
-        + diffusion*Div_a_Laplace_xz(n)
-        ;
+      ddt(n) = diffusion*Div_a_Laplace_xz(n);
 
+      if (diffusion_par > 0.0) {
+        ddt(n) += diffusion_par * Grad2_par2(n);
+      }
+      
+      if (sound_waves) {
+        ddt(n) -= Div_par_integrate(nvi); // Parallel advection
+      }
+      
       if (drifts) {
         ddt(n) +=
           - Div_par_U1(n, -jtot/n)
@@ -398,7 +412,7 @@ protected:
     }
     
     // Parallel velocity
-    {
+    if (sound_waves) {
       TRACE("ddt(vi)");
       
       ddt(vi) =
@@ -680,6 +694,7 @@ private:
   BoutReal resistivity; // [Normalised]
   BoutReal hyperresist; // Hyper-resistivity
   BoutReal diffusion;   // Density diffusion [Normalised]
+  BoutReal diffusion_par; // Parallel density diffusion [Normalised]
   BoutReal viscosity;   // Perpendicular viscosity [Normalised]
   BoutReal viscosity_par; // Parallel viscosity [Normalised]
   
@@ -698,6 +713,7 @@ private:
   Field2D inv_dy; // 1 / (sqrt(g_22) * dy) for parallel gradients
 
   bool drifts;          // Include currents and electric fields?
+  bool sound_waves;     // Evolve vi (parallel sound waves)
   bool electromagnetic; // Include electromagnetic effects?
   bool FiniteElMass;    // Finite electron mass?
 
