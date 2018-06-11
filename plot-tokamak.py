@@ -38,7 +38,7 @@ for y in range(ny):
     if log:
         savefile = "log_"+savefile
     
-    fig,ax = plt.subplots()
+    fig, ax = plt.subplots()
     ax.contour(R, Z, psi, 50, colors='0.75', zorder=0)
     
     ax.contour(R, Z, psi, levels=[psi_boundary], colors='k', zorder=1)
