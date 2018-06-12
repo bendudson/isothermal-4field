@@ -3,7 +3,7 @@
 # Calculates R, Z, psi as a function of time on a given toroidal slice (y index)
 
 gridfile = "tokamak-ny10.fci.nc"
-datapath = "filament"
+datapath = "filament-200x10x200/100eV"
 yindex = 5
 
 from boutdata import collect
