@@ -2,9 +2,9 @@
 # 
 
 nout = 100
-timestep = 1
+timestep = 10
 
-grid = "tokamak-ny10.fci.nc"
+grid = "tokamak-ny1.fci.nc"
 
 myg = 1
 nxpe = 1
@@ -65,8 +65,7 @@ bndry_all = neumann
 [n]
 
 zl = z / (2*pi)
-yl = y / (2*pi)
-function = model:background + 1e-3 * exp(-((x-0.6)/0.03)^2 - ((zl-0.5)/0.03)^2 - ((yl-0.5)/0.05)^2)
+function = model:background + 1e-3 * exp(-((x-0.6)/0.03)^2 - ((zl-0.5)/0.03)^2)
 
 [logn]
 
