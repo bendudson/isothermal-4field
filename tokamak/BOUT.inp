@@ -2,9 +2,9 @@
 # 
 
 nout = 100
-timestep = 10
+timestep = 100
 
-grid = "tokamak-ny1.fci.nc"
+grid = "tokamak.fci.nc"
 
 myg = 1
 nxpe = 1
@@ -13,8 +13,14 @@ nxpe = 1
 
 paralleltransform = fci
 
+[restart]
+init_missing=true
+
 [fci]
 z_periodic = false
+
+[interpolation]
+#type = monotonichermitespline
 
 [solver]  # Time integration solver
 
@@ -45,14 +51,18 @@ all_terms = false
 
 [model]
 
-viscosity = 1e-2     # Kinematic viscosity in m^2/s
+viscosity = 1     # Kinematic viscosity in m^2/s
 viscosity_par = 1e5  # Parallel kinematic viscosity in m^2/s
 resistivity = 5e-6
+
+diffusion_perp = 1.0 # Perpendicular density diffusion in m^2/s
+diffusion_par = 1e4 # Parallel density diffusion in m^2/s
 
 Ti = 100.
 Te = 100.
 
 drifts = false         # Include currents and electric fields?
+sound_waves = false    # Evolve parallel velocity
 electromagnetic = true
 FiniteElMass = true
 
@@ -65,7 +75,9 @@ bndry_all = neumann
 [n]
 
 zl = z / (2*pi)
-function = model:background + 1e-3 * exp(-((x-0.7)/0.1)^2 - ((zl-0.3)/0.1)^2)
+function = model:background + 1e-3 * exp(-((x-0.6)/0.1)^2 - ((zl-0.5)/0.1)^2)
+
+source = function * 1e-2
 
 [logn]
 
@@ -76,10 +88,10 @@ bndry_par_ydown = parallel_neumann
 
 [vi]
 
-bndry_par_all = parallel_dirichlet
+#bndry_par_all = parallel_dirichlet
 
-#bndry_par_yup = parallel_dirichlet(1.0)
-#bndry_par_ydown = parallel_dirichlet(-1.0)
+bndry_par_yup = parallel_dirichlet(1.0)
+bndry_par_ydown = parallel_dirichlet(-1.0)
 
 [jtot]
 bndry_par_all = parallel_dirichlet_midpoint
