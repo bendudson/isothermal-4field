@@ -49,14 +49,15 @@ for y in range(ny):
     else:
         cax = ax.contourf(R, Z, data[0, :, y, :], 50, cmap=cmap, zorder=2, alpha=0.5)
     
-    for c in cax.collections:  # Remove white lines between levels
-        c.set_edgecolor("face")
+    # for c in cax.collections:  # Remove white lines between levels
+    #     c.set_edgecolor("face")
     cbar = fig.colorbar(cax)
 
     ax.set_title(variable + r' at $\phi = %.1f^o$, time = $%.1f/\Omega_{ci}$' % (angle, time))
     ax.set_aspect("equal")
 
     plt.savefig(savefile)
+    print("Saved " + savefile)
     #plt.show()
     plt.close()
     
