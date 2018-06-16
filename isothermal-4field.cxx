@@ -126,6 +126,16 @@ protected:
     output.write("\tNormalised viscosity = %e, parallel viscosity = %e, resistivity = %e\n", viscosity, viscosity_par, resistivity);
 
     OPTION(opt, hyperresist, 1.0);
+
+    /////////////////////////////////////////////////////////////////////
+    // External source
+
+    Options *nopt = Options::getRoot()->getSection("n");
+    if (nopt->isSet("source")) {
+      source = FieldFactory::get()->create3D("source", nopt, mesh);
+    } else {
+      source = 0.0;
+    }
     
     /////////////////////////////////////////////////////////////////////
     // Coordinates and mesh
@@ -382,8 +392,8 @@ protected:
     {
       TRACE("ddt(n)");
       
-      ddt(n) = diffusion*Div_a_Laplace_xz(n);
-
+      ddt(n) = source + diffusion*Div_a_Laplace_xz(n);
+      
       if (diffusion_par > 0.0) {
         ddt(n) += diffusion_par * Grad2_par2(n);
       }
@@ -399,7 +409,7 @@ protected:
           + curvature(n * Te)  // Electron curvature drift
           ;
       }
-
+      
       ddt(logn) = ddt(n) / n;
     }
     
@@ -719,6 +729,8 @@ private:
 
   BoutReal background; ///< background density floor
   BoutReal log_background; // Log(background)
+
+  Field3D source; // External input source of density
 };
 
 ///////////////////////////////////////////////////////////
